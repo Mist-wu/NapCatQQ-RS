@@ -40,6 +40,13 @@ pub enum MessageElement {
     Text { text: String },
     /// Image attachment metadata.
     Image { path: String, size: Option<u64> },
+    /// Video attachment metadata.
+    Video {
+        /// Local or remote video resource path.
+        path: String,
+        /// Optional duration in milliseconds.
+        duration_ms: Option<u64>,
+    },
     /// File attachment metadata.
     File { path: String, md5: Option<String> },
     /// Mention element.
@@ -91,6 +98,13 @@ impl Message {
         self.elements
             .iter()
             .any(|e| matches!(e, MessageElement::File { .. }))
+    }
+
+    /// Check whether the payload contains a video.
+    pub fn is_video_message(&self) -> bool {
+        self.elements
+            .iter()
+            .any(|e| matches!(e, MessageElement::Video { .. }))
     }
 
     /// Check whether the payload contains an @ mention.
@@ -225,6 +239,10 @@ mod tests {
                     path: "/tmp/x.png".to_string(),
                     size: Some(1024),
                 },
+                MessageElement::Video {
+                    path: "/tmp/x.mp4".to_string(),
+                    duration_ms: Some(12_000),
+                },
                 MessageElement::At {
                     target_user: "bob".to_string(),
                 },
@@ -238,6 +256,7 @@ mod tests {
         };
 
         assert!(message.is_image_message());
+        assert!(message.is_video_message());
         assert!(message.is_at_message());
         assert!(message.is_reply_message());
         assert!(message.is_json_message());

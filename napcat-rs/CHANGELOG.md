@@ -23,6 +23,10 @@
   - Add `QQClient` trait for connect/login/send_packet/receive_packet/heartbeat.
   - Add `QQClientConfig`, `Packet`, `ConnectionState`, and mock adapter `MockQQClient`.
   - Wire new crate into workspace members.
+- feat(message): add video message element support
+  - Extend unified message model with `MessageElement::Video`.
+  - Add `is_video_message` helper and JSON round-trip coverage.
+  - Update OneBot transport serialization to emit video markers in plain-text adapters.
 - feat(event): add unified protocol event bus crate
   - Add `napcat-event` generic broadcast event bus with envelope metadata.
   - Update API state event pipeline to publish protocol events through `EventBus`.

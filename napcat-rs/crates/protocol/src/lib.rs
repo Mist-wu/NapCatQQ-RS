@@ -280,6 +280,11 @@ impl OneBotHttpBackend {
                     output.push_str(path);
                     output.push(']');
                 }
+                MessageElement::Video { path, .. } => {
+                    output.push_str("[Video:");
+                    output.push_str(path);
+                    output.push(']');
+                }
                 MessageElement::File { path, .. } => {
                     output.push_str("[File:");
                     output.push_str(path);
@@ -690,5 +695,23 @@ mod tests {
         proto.disconnect().await?;
         assert!(!proto.is_logged_in().await?);
         Ok(())
+    }
+
+    #[test]
+    fn message_to_plain_text_serializes_video() {
+        let message = Message {
+            id: String::from("video-1"),
+            sender_id: String::from("alice"),
+            recipient: MessageRecipient::Group {
+                group_id: String::from("g1"),
+            },
+            elements: vec![MessageElement::Video {
+                path: String::from("/tmp/video.mp4"),
+                duration_ms: Some(3000),
+            }],
+        };
+
+        let plain = OneBotHttpBackend::message_to_plain_text(&message);
+        assert!(plain.contains("[Video:/tmp/video.mp4]"));
     }
 }
