@@ -134,7 +134,7 @@ pub trait MessageHandler: Send + Sync {
     fn can_handle(&self, message: &Message) -> bool;
 
     /// Handle message asynchronously.
-    async fn handle(&self, message: Message) -> MessageResult<HandleResult>;
+    async fn handle(&self, message: &Message) -> MessageResult<HandleResult>;
 }
 
 /// Type alias for message handling.
@@ -176,7 +176,7 @@ impl MessageHandler for EchoHandler {
         true
     }
 
-    async fn handle(&self, message: Message) -> MessageResult<HandleResult> {
+    async fn handle(&self, message: &Message) -> MessageResult<HandleResult> {
         match message.recipient {
             MessageRecipient::Group { group_id } => Ok(HandleResult {
                 accepted: true,
@@ -193,7 +193,7 @@ impl MessageHandler for EchoHandler {
 /// Dispatch message to a handler.
 pub async fn dispatch(
     handler: &dyn MessageHandler,
-    message: Message,
+    message: &Message,
 ) -> MessageResult<HandleResult> {
     if !handler.can_handle(&message) {
         return Err(MessageError::UnsupportedChannel(format!(
@@ -259,7 +259,7 @@ mod tests {
             },
             "ping",
         );
-        let outcome = dispatch(&handler, message).await?;
+        let outcome = dispatch(&handler, &message).await?;
         assert!(outcome.accepted);
         assert_eq!(outcome.detail, "private:alice");
         Ok(())

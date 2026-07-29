@@ -16,17 +16,25 @@ use napcat_message::{Message as NapMessage, MessageRecipient};
 use napcat_protocol::{ProtocolError, ProtocolEvent, ProtocolResult, serialize_event};
 use serde::{Deserialize, Serialize};
 use tokio::{
-    sync::{RwLock, broadcast},
+    sync::{mpsc, RwLock, broadcast},
     time::timeout,
 };
+
+const EVENT_BROADCAST_CAPACITY: usize = 128;
+const EVENT_DISPATCH_CAPACITY: usize = 64;
+const EVENT_DISPATCH_TIMEOUT_MS: u64 = 80;
+
+type SharedGroups = Arc<Vec<GroupInfo>>;
+type SharedUsers = Arc<Vec<UserInfo>>;
 
 /// Shared API state for HTTP and WebSocket handlers.
 #[derive(Clone)]
 pub struct ApiState {
     events: broadcast::Sender<ProtocolEvent>,
+    dispatch_tx: mpsc::Sender<ProtocolEvent>,
     runtime_running: Arc<RwLock<bool>>,
-    runtime_groups: Arc<RwLock<Vec<GroupInfo>>>,
-    runtime_users: Arc<RwLock<Vec<UserInfo>>>,
+    runtime_groups: Arc<RwLock<SharedGroups>>,
+    runtime_users: Arc<RwLock<SharedUsers>>,
 }
 
 /// API response envelope for public interfaces.
@@ -201,12 +209,21 @@ type ApiResult<T> = Result<T, ApiError>;
 impl ApiState {
     /// Create a default state with empty cache values.
     pub fn new() -> Self {
-        let (events, _) = broadcast::channel(64);
+        let (events, _) = broadcast::channel(EVENT_BROADCAST_CAPACITY);
+        let (dispatch_tx, mut dispatch_rx) = mpsc::channel(EVENT_DISPATCH_CAPACITY);
+        let broadcaster = events.clone();
+        tokio::spawn(async move {
+            while let Some(event) = dispatch_rx.recv().await {
+                let _ = broadcaster.send(event);
+            }
+        });
+
         Self {
             events,
+            dispatch_tx,
             runtime_running: Arc::new(RwLock::new(false)),
-            runtime_groups: Arc::new(RwLock::new(Vec::new())),
-            runtime_users: Arc::new(RwLock::new(Vec::new())),
+            runtime_groups: Arc::new(RwLock::new(Arc::new(compatibility_default_groups()))),
+            runtime_users: Arc::new(RwLock::new(Arc::new(compatibility_default_users()))),
         }
     }
 
@@ -224,22 +241,22 @@ impl ApiState {
     /// Replace group cache.
     pub async fn set_groups(&self, groups: Vec<GroupInfo>) {
         let mut current = self.runtime_groups.write().await;
-        *current = groups;
+        *current = Arc::new(groups);
     }
 
     /// Replace user cache.
     pub async fn set_users(&self, users: Vec<UserInfo>) {
         let mut current = self.runtime_users.write().await;
-        *current = users;
+        *current = Arc::new(users);
     }
     /// Read cached group cache.
     pub async fn groups(&self) -> Vec<GroupInfo> {
-        self.runtime_groups.read().await.clone()
+        self.runtime_groups.read().await.as_ref().clone()
     }
 
     /// Read cached user cache.
     pub async fn users(&self) -> Vec<UserInfo> {
-        self.runtime_users.read().await.clone()
+        self.runtime_users.read().await.as_ref().clone()
     }
 
     /// Build shared router.
@@ -260,9 +277,22 @@ impl ApiState {
             .with_state(self)
     }
 
-    fn emit_event(&self, event: ProtocolEvent) -> ApiResult<()> {
-        let _ = self.events.send(event);
-        Ok(())
+    async fn emit_event(&self, event: ProtocolEvent) -> ApiResult<()> {
+        let send_result = timeout(
+            Duration::from_millis(EVENT_DISPATCH_TIMEOUT_MS),
+            self.dispatch_tx.send(event),
+        )
+        .await;
+
+        match send_result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => {
+                Err(ApiError::EventDispatch(format!("dispatch channel closed: {error}")))
+            }
+            Err(_) => Err(ApiError::EventDispatch(String::from(
+                "event dispatch timed out",
+            ))),
+        }
     }
 }
 
@@ -365,29 +395,23 @@ async fn get_login_info(
 }
 
 async fn list_groups(State(state): State<ApiState>) -> Json<ApiEnvelope<Vec<GroupInfo>>> {
-    let mut groups = state.runtime_groups.read().await.clone();
-    if groups.is_empty() {
-        groups = compatibility_default_groups();
-    }
+    let groups = state.runtime_groups.read().await;
 
     Json(ApiEnvelope {
         status: String::from("ok"),
         retcode: 0,
-        data: groups,
+        data: groups.as_ref().clone(),
         message: None,
     })
 }
 
 async fn list_users(State(state): State<ApiState>) -> Json<ApiEnvelope<Vec<UserInfo>>> {
-    let mut users = state.runtime_users.read().await.clone();
-    if users.is_empty() {
-        users = compatibility_default_users();
-    }
+    let users = state.runtime_users.read().await;
 
     Json(ApiEnvelope {
         status: String::from("ok"),
         retcode: 0,
-        data: users,
+        data: users.as_ref().clone(),
         message: None,
     })
 }
@@ -486,16 +510,17 @@ async fn push_send_event(
     state: &ApiState,
     message: NapMessage,
 ) -> ApiResult<Json<ApiEnvelope<SendResponse>>> {
-    state.emit_event(ProtocolEvent::MessageReceived {
-        message: message.clone(),
-    })?;
+    let message_id = message.id.clone();
+    state
+        .emit_event(ProtocolEvent::MessageReceived { message })
+        .await?;
 
     Ok(Json(ApiEnvelope {
         status: String::from("ok"),
         retcode: 0,
         data: SendResponse {
             accepted: true,
-            message_id: message.id,
+            message_id,
         },
         message: None,
     }))
@@ -548,8 +573,6 @@ impl CompatSendRequest {
 /// Start API server with in-memory state.
 pub async fn run(addr: &str) -> ProtocolResult<()> {
     let state = ApiState::new();
-    state.set_groups(compatibility_default_groups()).await;
-    state.set_users(compatibility_default_users()).await;
 
     let app = state.router();
     let socket_addr = addr

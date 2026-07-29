@@ -159,7 +159,7 @@ pub fn serialize_event(event: &ProtocolEvent) -> ProtocolResult<String> {
 }
 
 /// Generic protocol-to-handler bridge.
-pub async fn forward_to_handler<H>(handler: &H, event: ProtocolEvent) -> MessageResult<String>
+pub async fn forward_to_handler<H>(handler: &H, event: &ProtocolEvent) -> MessageResult<String>
 where
     H: MessageHandler,
 {
@@ -218,8 +218,9 @@ mod tests {
             .await
             .ok_or_else(|| ProtocolError::Transport("no message from mock protocol".to_string()))?;
         let handler = EchoHandler;
+        let event = ProtocolEvent::MessageReceived { message: recv };
         let summary =
-            forward_to_handler(&handler, ProtocolEvent::MessageReceived { message: recv })
+            forward_to_handler(&handler, &event)
                 .await
                 .map_err(|error| ProtocolError::Transport(error.to_string()))?;
         assert!(summary.starts_with("echo:"));

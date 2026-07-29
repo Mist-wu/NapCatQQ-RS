@@ -1,14 +1,14 @@
 //! Core runtime framework.
 
-use std::{collections::HashMap, future::Future, pin::Pin, time::Duration};
+use std::{collections::HashMap, future::Future, mem, pin::Pin, time::Duration};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
-    sync::{Mutex, RwLock, broadcast},
-    task::JoinHandle,
-    time::{Instant, timeout},
+    sync::{broadcast, Mutex, RwLock},
+    task::{JoinHandle, JoinSet},
+    time::{timeout, Instant},
 };
 
 /// Core error type for runtime orchestration.
@@ -79,7 +79,6 @@ type TaskFactory = Box<dyn FnOnce(broadcast::Receiver<()>) -> TaskFuture + Send 
 
 struct ServiceTask {
     handle: JoinHandle<()>,
-    started_at: Instant,
 }
 
 /// Core runtime container.
@@ -146,13 +145,14 @@ impl Runtime {
             }
         });
 
-        self.tasks.lock().await.insert(
-            name,
-            ServiceTask {
-                handle,
-                started_at: Instant::now(),
-            },
-        );
+        let mut tasks = self.tasks.lock().await;
+        if tasks.contains_key(&name) {
+            return Err(RuntimeError::TaskFailure(format!(
+                "service already registered: {name}"
+            )));
+        }
+
+        tasks.insert(name, ServiceTask { handle });
         Ok(())
     }
 
@@ -169,13 +169,15 @@ impl Runtime {
 
         let receiver = self.shutdown_tx.subscribe();
         let handle = tokio::spawn(task(receiver));
-        self.tasks.lock().await.insert(
-            name.to_string(),
-            ServiceTask {
-                handle,
-                started_at: Instant::now(),
-            },
-        );
+
+        let mut tasks = self.tasks.lock().await;
+        if tasks.contains_key(name) {
+            return Err(RuntimeError::TaskFailure(format!(
+                "task already registered: {name}"
+            )));
+        }
+
+        tasks.insert(name.to_string(), ServiceTask { handle });
         Ok(())
     }
 
@@ -186,7 +188,7 @@ impl Runtime {
             if *state == RuntimeState::Stopped {
                 return Ok(0);
             }
-            if *state != RuntimeState::Running && *state != RuntimeState::Stopping {
+            if !matches!(*state, RuntimeState::Running | RuntimeState::Stopping) {
                 return Err(RuntimeError::InvalidState(format!(
                     "cannot shutdown from {:?} state",
                     *state
@@ -201,22 +203,33 @@ impl Runtime {
                 .map_err(|error| RuntimeError::TaskFailure(error.to_string()))?;
         }
 
-        let mut tasks = self.tasks.lock().await;
-        let mut drained = 0usize;
+        let drained_tasks = {
+            let mut tasks = self.tasks.lock().await;
+            mem::take(&mut *tasks)
+        };
 
-        for (_name, task) in tasks.drain() {
-            let handle = task.handle;
-            let _started_at = task.started_at;
-            timeout(self.config.shutdown_timeout, handle)
-                .await
-                .map_err(|_| RuntimeError::ShutdownTimeout)?
-                .map_err(|join_err| RuntimeError::TaskFailure(join_err.to_string()))?;
-            drained += 1;
+        let mut stopped = 0usize;
+        let mut join_set = JoinSet::new();
+        let shutdown_timeout = self.config.shutdown_timeout;
+
+        for (_, task) in drained_tasks {
+            join_set.spawn(async move {
+                timeout(shutdown_timeout, task.handle)
+                    .await
+                    .map_err(|_| RuntimeError::ShutdownTimeout)?
+                    .map_err(|join_err| RuntimeError::TaskFailure(join_err.to_string()))
+            });
+        }
+
+        while let Some(joined) = join_set.join_next().await {
+            joined
+                .map_err(|error| RuntimeError::TaskFailure(error.to_string()))??;
+            stopped += 1;
         }
 
         let mut state = self.state.write().await;
         *state = RuntimeState::Stopped;
-        Ok(drained)
+        Ok(stopped)
     }
 }
 
@@ -224,17 +237,17 @@ impl Runtime {
 mod tests {
     use super::*;
     use tokio::sync::mpsc;
-    use tokio::time::{Duration, sleep};
+    use tokio::time::{sleep, Duration};
 
     struct EchoService {
-        id: &'static str,
+        id: String,
         sender: mpsc::Sender<String>,
     }
 
     #[async_trait]
     impl Service for EchoService {
         fn name(&self) -> &str {
-            self.id
+            &self.id
         }
 
         async fn start(&self, mut shutdown: broadcast::Receiver<()>) -> Result<()> {
@@ -247,7 +260,9 @@ mod tests {
                     Ok(())
                 }
                 _ = sleep(Duration::from_secs(2)) => {
-                    Err(RuntimeError::TaskFailure("service timed out waiting shutdown".to_string()))
+                    Err(RuntimeError::TaskFailure(
+                        "service timed out waiting shutdown".to_string(),
+                    ))
                 }
             }
         }
@@ -260,7 +275,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(4);
         let service = EchoService {
-            id: "echo",
+            id: String::from("echo"),
             sender: tx,
         };
         runtime.register_service(service).await?;
@@ -281,10 +296,34 @@ mod tests {
         let runtime = Runtime::new(RuntimeConfig::default());
         let result = runtime
             .register_service(EchoService {
-                id: "bad",
+                id: String::from("bad"),
                 sender: mpsc::channel(1).0,
             })
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn runtime_can_register_many_tasks_in_parallel() -> Result<()> {
+        let runtime = Runtime::new(RuntimeConfig::default());
+        runtime.start().await?;
+
+        let mut services = Vec::new();
+        for i in 0..4 {
+            let (tx, _rx) = mpsc::channel(1);
+            services.push(EchoService {
+                id: format!("task-{i}"),
+                sender: tx,
+            });
+        }
+
+        for service in services {
+            runtime.register_service(service).await?;
+        }
+
+        let stopped = runtime.shutdown().await?;
+        assert_eq!(stopped, 4);
+
+        Ok(())
     }
 }

@@ -78,7 +78,7 @@ async fn protocol_forwarder_produces_handler_summary() {
         ),
     };
 
-    let summary = forward_to_handler(&napcat_message::EchoHandler, event)
+    let summary = forward_to_handler(&napcat_message::EchoHandler, &event)
         .await
         .expect("handler should produce summary");
     assert!(summary.contains("echo:"));
