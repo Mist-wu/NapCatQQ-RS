@@ -1,0 +1,10 @@
+[package]
+name = "napcat-core"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+tokio.workspace = true
+tracing.workspace = true
+serde.workspace = true
