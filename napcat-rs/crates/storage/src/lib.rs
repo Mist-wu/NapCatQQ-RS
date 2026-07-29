@@ -234,14 +234,8 @@ impl Storage for MemoryStore {
         let mut keys = values
             .keys()
             .filter_map(|qualified| {
-                let mut split = qualified.splitn(2, '\0');
-                let current_namespace = split.next()?;
-                let current_key = split.next()?;
-                if current_namespace == namespace {
-                    Some(current_key.to_string())
-                } else {
-                    None
-                }
+                let (current_namespace, current_key) = qualified.split_once('\0')?;
+                (current_namespace == namespace).then_some(current_key.to_string())
             })
             .collect::<Vec<_>>();
 
