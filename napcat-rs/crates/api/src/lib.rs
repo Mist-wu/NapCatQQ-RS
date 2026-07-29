@@ -16,7 +16,7 @@ use napcat_message::{Message as NapMessage, MessageRecipient};
 use napcat_protocol::{ProtocolError, ProtocolEvent, ProtocolResult, serialize_event};
 use serde::{Deserialize, Serialize};
 use tokio::{
-    sync::{mpsc, RwLock, broadcast},
+    sync::{broadcast, mpsc, RwLock},
     time::timeout,
 };
 
@@ -281,9 +281,9 @@ impl ApiState {
 
         match send_result {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) => {
-                Err(ApiError::EventDispatch(format!("dispatch channel closed: {error}")))
-            }
+            Ok(Err(error)) => Err(ApiError::EventDispatch(format!(
+                "dispatch channel closed: {error}"
+            ))),
             Err(_) => Err(ApiError::EventDispatch(String::from(
                 "event dispatch timed out",
             ))),

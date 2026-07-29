@@ -2,18 +2,17 @@
 
 use std::{
     collections::HashMap,
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
 };
 
 use async_trait::async_trait;
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{io::AsyncWriteExt, process::Command, sync::RwLock, time::timeout};
-use reqwest::Url;
 
 /// Convenience plugin result type.
 pub type PluginResult<T> = std::result::Result<T, PluginError>;
@@ -242,7 +241,11 @@ fn validate_plugin_path(path: &Path) -> PluginResult<PathBuf> {
     })?;
 
     let metadata = normalized.metadata().map_err(|error| {
-        PluginError::InvalidSource(format!("cannot stat plugin path {}: {}", path.display(), error))
+        PluginError::InvalidSource(format!(
+            "cannot stat plugin path {}: {}",
+            path.display(),
+            error
+        ))
     })?;
 
     if !metadata.is_file() {
@@ -360,9 +363,10 @@ impl RustPlugin {
             })?;
 
             if metadata.permissions().mode() & 0o111 == 0 {
-                return Err(PluginError::InvalidSource(
-                    format!("rust plugin executable not executable: {}", validated.display()),
-                ));
+                return Err(PluginError::InvalidSource(format!(
+                    "rust plugin executable not executable: {}",
+                    validated.display()
+                )));
             }
         }
         Ok(())
@@ -386,7 +390,9 @@ impl RustPlugin {
             ))
         })?;
 
-        if let Some(event_payload) = event && let Some(mut stdin) = child.stdin.take() {
+        if let Some(event_payload) = event
+            && let Some(mut stdin) = child.stdin.take()
+        {
             let event_body = serde_json::to_vec(event_payload)
                 .map_err(|error| PluginError::Serialize(error.to_string()))?;
             stdin.write_all(&event_body).await?;
@@ -560,7 +566,10 @@ impl PluginBackendRuntime for HttpPlugin {
 impl HttpPlugin {
     async fn request(&self, path: &str, event: PluginEvent) -> PluginResult<Option<PluginAction>> {
         let base = Url::parse(&self.endpoint).map_err(|error| {
-            PluginError::InvalidSource(format!("invalid plugin endpoint {}: {error}", self.endpoint))
+            PluginError::InvalidSource(format!(
+                "invalid plugin endpoint {}: {error}",
+                self.endpoint
+            ))
         })?;
         let target = base.join(path).map_err(|error| {
             PluginError::Transport(format!("http plugin endpoint join failed: {error}"))
@@ -826,10 +835,7 @@ mod tests {
         };
 
         let result = manager.load(definition).await;
-        assert!(matches!(
-            result,
-            Err(PluginError::InvalidSource(_))
-        ));
+        assert!(matches!(result, Err(PluginError::InvalidSource(_))));
         Ok(())
     }
 

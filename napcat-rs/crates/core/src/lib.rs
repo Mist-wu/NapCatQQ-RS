@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
-    sync::{broadcast, Mutex, RwLock},
+    sync::{Mutex, RwLock, broadcast},
     task::{JoinHandle, JoinSet},
-    time::{timeout},
+    time::timeout,
 };
 
 /// Core error type for runtime orchestration.
@@ -222,8 +222,7 @@ impl Runtime {
         }
 
         while let Some(joined) = join_set.join_next().await {
-            joined
-                .map_err(|error| RuntimeError::TaskFailure(error.to_string()))??;
+            joined.map_err(|error| RuntimeError::TaskFailure(error.to_string()))??;
             stopped += 1;
         }
 
@@ -237,7 +236,7 @@ impl Runtime {
 mod tests {
     use super::*;
     use tokio::sync::mpsc;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     struct EchoService {
         id: String,
