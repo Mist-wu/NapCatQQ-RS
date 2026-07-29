@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
 use std::{
     collections::HashMap,
+    fs as std_fs,
     path::{Path, PathBuf},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -457,12 +458,20 @@ fn validate_key(key: &str) -> Result<()> {
 }
 
 fn storage_url_from_path(path: &Path) -> Result<String> {
+    if path.as_os_str() == ":memory:" {
+        return Ok(String::from("sqlite::memory:"));
+    }
+
     let path_text = path
         .to_str()
         .ok_or_else(|| {
             StorageError::Validation(String::from("database path contains non-utf8 characters"))
         })?;
-    Ok(format!("sqlite://{path_text}"))
+    if path.is_absolute() {
+        Ok(format!("sqlite:///{path_text}"))
+    } else {
+        Ok(format!("sqlite://{path_text}"))
+    }
 }
 
 fn resolve_sqlite_path(raw_path: &str) -> Result<PathBuf> {
@@ -476,9 +485,15 @@ fn resolve_sqlite_path(raw_path: &str) -> Result<PathBuf> {
         return Ok(PathBuf::from(":memory:"));
     }
 
-    let normalized = if raw_path.starts_with("sqlite://") {
+    let normalized = if raw_path == "sqlite::memory:" {
+        PathBuf::from(":memory:")
+    } else if raw_path.starts_with("sqlite://") {
         let path = raw_path.trim_start_matches("sqlite://");
-        Path::new(path).to_owned()
+        if let Some(rest) = path.strip_prefix('/') {
+            Path::new(rest).to_owned()
+        } else {
+            Path::new(path).to_owned()
+        }
     } else {
         Path::new(raw_path).to_owned()
     };
@@ -489,7 +504,23 @@ fn resolve_sqlite_path(raw_path: &str) -> Result<PathBuf> {
         )));
     }
 
-    Ok(normalized)
+    if normalized.as_os_str() == ":memory:" {
+        return Ok(normalized);
+    }
+
+    let absolute = if normalized.is_absolute() {
+        normalized
+    } else {
+        std::env::current_dir()
+            .map_err(|error| StorageError::Io(error.to_string()))?
+            .join(normalized)
+    };
+
+    if let Some(parent) = absolute.parent() {
+        std_fs::create_dir_all(parent).map_err(|error| StorageError::Io(error.to_string()))?;
+    }
+
+    Ok(absolute)
 }
 
 #[cfg(test)]
