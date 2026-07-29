@@ -1,11 +1,19 @@
 //! Plugin architecture and dynamic runtime support.
 
-use std::{collections::HashMap, io, path::Path, path::PathBuf, process::Stdio, time::Duration};
+use std::{
+    collections::HashMap,
+    fs,
+    io,
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{io::AsyncWriteExt, process::Command, sync::RwLock, time::timeout};
+use reqwest::Url;
 
 /// Convenience plugin result type.
 pub type PluginResult<T> = std::result::Result<T, PluginError>;
@@ -209,12 +217,68 @@ pub enum PluginError {
     /// Transport level failure.
     #[error("plugin transport failure: {0}")]
     Transport(String),
+
+    /// Invalid plugin source definition.
+    #[error("invalid plugin source: {0}")]
+    InvalidSource(String),
 }
 
 impl From<io::Error> for PluginError {
     fn from(err: io::Error) -> Self {
         PluginError::Io(err.to_string())
     }
+}
+
+const MAX_PLUGIN_TIMEOUT_MS: u64 = 60_000;
+const MIN_PLUGIN_TIMEOUT_MS: u64 = 10;
+
+fn validate_plugin_path(path: &Path) -> PluginResult<PathBuf> {
+    let normalized = fs::canonicalize(path).map_err(|error| {
+        PluginError::InvalidSource(format!(
+            "cannot canonicalize plugin path {}: {}",
+            path.display(),
+            error
+        ))
+    })?;
+
+    let metadata = normalized.metadata().map_err(|error| {
+        PluginError::InvalidSource(format!("cannot stat plugin path {}: {}", path.display(), error))
+    })?;
+
+    if !metadata.is_file() {
+        return Err(PluginError::InvalidSource(format!(
+            "plugin path is not a file: {}",
+            path.display()
+        )));
+    }
+
+    Ok(normalized)
+}
+
+fn validate_http_endpoint(endpoint: &str) -> PluginResult<String> {
+    let parsed = Url::parse(endpoint).map_err(|error| {
+        PluginError::InvalidSource(format!("invalid plugin endpoint {endpoint}: {error}"))
+    })?;
+
+    match parsed.scheme() {
+        "http" | "https" => {}
+        other => {
+            return Err(PluginError::InvalidSource(format!(
+                "unsupported plugin endpoint scheme `{other}`, expected http/https"
+            )));
+        }
+    }
+
+    Ok(parsed.to_string())
+}
+
+fn validate_timeout(timeout_ms: u64) -> PluginResult<Duration> {
+    if !(MIN_PLUGIN_TIMEOUT_MS..=MAX_PLUGIN_TIMEOUT_MS).contains(&timeout_ms) {
+        return Err(PluginError::InvalidSource(format!(
+            "plugin timeout must be in range [{MIN_PLUGIN_TIMEOUT_MS}, {MAX_PLUGIN_TIMEOUT_MS}] ms"
+        )));
+    }
+    Ok(Duration::from_millis(timeout_ms))
 }
 
 enum PluginBackend {
@@ -285,11 +349,21 @@ struct RustPlugin {
 
 impl RustPlugin {
     fn validate_path(path: &Path) -> PluginResult<()> {
-        if !path.exists() {
-            return Err(PluginError::RuntimeUnavailable(format!(
-                "rust plugin executable missing: {}",
-                path.display()
-            )));
+        let validated = validate_plugin_path(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let metadata = validated.metadata().map_err(|error| {
+                PluginError::InvalidSource(format!(
+                    "rust plugin executable metadata invalid: {error}"
+                ))
+            })?;
+
+            if metadata.permissions().mode() & 0o111 == 0 {
+                return Err(PluginError::InvalidSource(
+                    format!("rust plugin executable not executable: {}", validated.display()),
+                ));
+            }
         }
         Ok(())
     }
@@ -370,10 +444,18 @@ struct WasmPlugin {
 
 impl WasmPlugin {
     fn validate_path(path: &Path) -> PluginResult<()> {
-        if !path.exists() {
+        let validated = validate_plugin_path(path)?;
+        if !validated.is_file() {
             return Err(PluginError::RuntimeUnavailable(format!(
                 "wasm module missing: {}",
                 path.display()
+            )));
+        }
+
+        if validated.extension().and_then(|ext| ext.to_str()) != Some("wasm") {
+            return Err(PluginError::InvalidSource(format!(
+                "wasm module must use .wasm extension: {}",
+                validated.display()
             )));
         }
 
@@ -477,11 +559,12 @@ impl PluginBackendRuntime for HttpPlugin {
 
 impl HttpPlugin {
     async fn request(&self, path: &str, event: PluginEvent) -> PluginResult<Option<PluginAction>> {
-        let mut target = self.endpoint.clone();
-        if !target.ends_with('/') {
-            target.push('/');
-        }
-        target.push_str(path);
+        let base = Url::parse(&self.endpoint).map_err(|error| {
+            PluginError::InvalidSource(format!("invalid plugin endpoint {}: {error}", self.endpoint))
+        })?;
+        let target = base.join(path).map_err(|error| {
+            PluginError::Transport(format!("http plugin endpoint join failed: {error}"))
+        })?;
 
         let client = reqwest::Client::builder()
             .timeout(self.timeout)
@@ -490,7 +573,7 @@ impl HttpPlugin {
 
         let request = HttpPluginRequest { event };
         let response = client
-            .post(target)
+            .post(target.as_str())
             .json(&request)
             .send()
             .await
@@ -618,12 +701,14 @@ impl PluginManager {
                 args,
                 timeout_ms,
             } => {
+                let executable = validate_plugin_path(&executable)?;
                 RustPlugin::validate_path(&executable)?;
+                let timeout = validate_timeout(timeout_ms)?;
                 Ok(PluginBackend::Rust(RustPlugin {
                     metadata,
                     executable,
                     args,
-                    timeout: Duration::from_millis(timeout_ms),
+                    timeout,
                 }))
             }
             PluginSource::Wasm {
@@ -631,12 +716,14 @@ impl PluginManager {
                 entrypoint,
                 timeout_ms,
             } => {
+                let module = validate_plugin_path(&module)?;
                 WasmPlugin::validate_path(&module)?;
+                let timeout = validate_timeout(timeout_ms)?;
                 Ok(PluginBackend::Wasm(WasmPlugin {
                     metadata,
                     module,
                     entrypoint,
-                    timeout: Duration::from_millis(timeout_ms),
+                    timeout,
                 }))
             }
             PluginSource::Http {
@@ -644,8 +731,8 @@ impl PluginManager {
                 timeout_ms,
             } => Ok(PluginBackend::Http(HttpPlugin {
                 metadata,
-                endpoint,
-                timeout: Duration::from_millis(timeout_ms),
+                endpoint: validate_http_endpoint(&endpoint)?,
+                timeout: validate_timeout(timeout_ms)?,
             })),
         }
     }
@@ -724,5 +811,36 @@ mod tests {
 
         assert!(actions.is_empty());
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn plugin_http_requires_http_or_https_endpoint() -> PluginResult<()> {
+        let manager = PluginManager::new();
+        let definition = PluginDefinition {
+            metadata: PluginMetadata::new("bad_http", "0.1.0"),
+            source: PluginSource::Http {
+                endpoint: String::from("file:///tmp/plugin"),
+                timeout_ms: 200,
+            },
+            enabled: true,
+        };
+
+        let result = manager.load(definition).await;
+        assert!(matches!(
+            result,
+            Err(PluginError::InvalidSource(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn plugin_timeout_is_validated() {
+        let short = validate_timeout(1);
+        let ok = validate_timeout(200);
+        let too_long = validate_timeout(120_000);
+
+        assert!(matches!(short, Err(PluginError::InvalidSource(_))));
+        assert!(ok.is_ok());
+        assert!(matches!(too_long, Err(PluginError::InvalidSource(_))));
     }
 }

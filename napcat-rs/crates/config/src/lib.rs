@@ -46,14 +46,15 @@ impl AppConfig {
 
     /// Build config from JSON config path.
     pub fn load_file(path: &Path) -> Result<AppConfigPatch> {
-        let content = fs::read_to_string(path).map_err(|error| ConfigError::FileRead {
-            path: path.to_path_buf(),
+        let safe_path = validate_config_path(path)?;
+        let content = fs::read_to_string(&safe_path).map_err(|error| ConfigError::FileRead {
+            path: safe_path.clone(),
             source: error,
         })?;
 
         let value = serde_json::from_str::<AppConfigPatch>(&content).map_err(|error| {
             ConfigError::FileParse {
-                path: path.to_path_buf(),
+                path: safe_path,
                 source: error,
             }
         })?;
@@ -150,10 +151,35 @@ pub enum ConfigError {
         /// reason.
         details: String,
     },
+
+    /// Invalid config path.
+    #[error("invalid config path `{path}`: {details}")]
+    InvalidPath {
+        /// config file path.
+        path: PathBuf,
+        /// validation details.
+        details: String,
+    },
 }
 
 /// Generic config result.
 pub type Result<T> = std::result::Result<T, ConfigError>;
+
+fn validate_config_path(path: &Path) -> Result<PathBuf> {
+    let canonical = fs::canonicalize(path).map_err(|error| ConfigError::InvalidPath {
+        path: path.to_path_buf(),
+        details: error.to_string(),
+    })?;
+
+    if !canonical.is_file() {
+        return Err(ConfigError::InvalidPath {
+            path: canonical,
+            details: String::from("target is not a regular file"),
+        });
+    }
+
+    Ok(canonical)
+}
 
 #[cfg(test)]
 mod tests {
@@ -165,16 +191,16 @@ mod tests {
     fn with_env_restore(name: &str, value: Option<&str>) -> Option<String> {
         let previous = env::var(name).ok();
         match value {
-            Some(next) => unsafe { env::set_var(name, next) },
-            None => unsafe { env::remove_var(name) },
+            Some(next) => env::set_var(name, next),
+            None => env::remove_var(name),
         }
         previous
     }
 
     fn restore_env(name: &str, previous: Option<String>) {
         match previous {
-            Some(value) => unsafe { env::set_var(name, value) },
-            None => unsafe { env::remove_var(name) },
+            Some(value) => env::set_var(name, value),
+            None => env::remove_var(name),
         }
     }
 
