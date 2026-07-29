@@ -2,9 +2,11 @@
 
 ## Unreleased
 - ci: add root-level GitHub Actions workflow to run fmt/clippy/test/bench in napcat-rs workspace.
+- docs: update test report with latest storage verification and benchmark snapshot.
 - docs: refresh benchmark timing summary in `docs/test-report.md` to latest `cargo bench` output.
 - docs: add root docs/performance.md and root docs/security-review.md; refresh docs/test-report.md with latest bench and test counts.
 - feat(api): expose runtime running state during run lifetime and add login status runtime online test.
+- test: update benchmark snapshot to current cloud-server run and record regression note.
 
 - Initial Rust rewrite scaffold created for `napcat-rs` workspace.
 - Implement HTTP and WebSocket API module with login/message/group/user endpoints and runtime event stream, plus `SendRequest` serialization and endpoint tests.
