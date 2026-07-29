@@ -800,13 +800,12 @@ pub async fn run_with_state(addr: &str, state: ApiState) -> ProtocolResult<()> {
         .await
         .map_err(|err| ProtocolError::Transport(err.to_string()));
     state.set_runtime_running(false).await;
-    if let Err(error) = serve_result {
-        if let Some(protocol) = protocol {
-            let _ = protocol.disconnect().await;
-        }
-        Err(error)
-    } else {
-        Ok(())
+    if let Some(protocol) = protocol {
+        let _ = protocol.disconnect().await;
+    }
+    match serve_result {
+        Ok(()) => Ok(()),
+        Err(error) => Err(error),
     }
 }
 #[cfg(test)]
