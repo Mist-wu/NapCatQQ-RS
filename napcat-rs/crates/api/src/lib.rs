@@ -144,17 +144,12 @@ pub struct SendResponse {
 }
 
 /// Message route payload kind.
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageType {
+    #[default]
     Private,
     Group,
-}
-
-impl Default for MessageType {
-    fn default() -> Self {
-        Self::Private
-    }
 }
 
 /// listen options from query string.
@@ -293,6 +288,12 @@ impl ApiState {
                 "event dispatch timed out",
             ))),
         }
+    }
+}
+
+impl Default for ApiState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -506,10 +507,10 @@ async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<ApiState>) -> impl
 async fn ws_handler(mut socket: WebSocket, state: ApiState) {
     let mut rx = state.events.subscribe();
     while let Ok(event) = rx.recv().await {
-        if let Ok(serialized) = serialize_event(&event) {
-            if socket.send(Message::Text(serialized.into())).await.is_err() {
-                break;
-            }
+        if let Ok(serialized) = serialize_event(&event)
+            && socket.send(Message::Text(serialized.into())).await.is_err()
+        {
+            break;
         }
     }
 }
