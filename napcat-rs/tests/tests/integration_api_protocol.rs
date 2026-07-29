@@ -1,8 +1,14 @@
 //! Integration tests across API and protocol layers.
 
+use axum::{
+    body::{Body, to_bytes},
+    http::{Request, StatusCode},
+};
 use napcat_api::{ApiState, CompatSendRequest, MessageType};
 use napcat_message::MessageRecipient;
 use napcat_protocol::{ProtocolEvent, ProtocolResult, deserialize_event, forward_to_handler};
+use serde_json;
+use tower::util::ServiceExt;
 
 #[tokio::test]
 async fn api_state_group_and_user_cache_roundtrip() {

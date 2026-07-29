@@ -2,7 +2,6 @@
 
 use std::{fmt, net::SocketAddr, sync::Arc, time::Duration};
 
-use napcat_event::{EventBus, EventEnvelope};
 use axum::{
     Json, Router,
     extract::{
@@ -13,13 +12,14 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use napcat_event::{EventBus, EventEnvelope};
 use napcat_message::{Message as NapMessage, MessageRecipient};
 use napcat_protocol::{
     ProtocolBackend, ProtocolError, ProtocolEvent, ProtocolResult, serialize_event,
 };
 use serde::{Deserialize, Serialize};
 use tokio::{
-    sync::{RwLock, mpsc},
+    sync::{RwLock, broadcast, mpsc},
     time::timeout,
 };
 
@@ -34,6 +34,7 @@ type SharedUsers = Arc<Vec<UserInfo>>;
 #[derive(Clone)]
 pub struct ApiState {
     events: EventBus<ProtocolEvent>,
+    protocol_events: broadcast::Sender<ProtocolEvent>,
     dispatch_tx: mpsc::Sender<ProtocolEvent>,
     protocol: Option<Arc<dyn ProtocolBackend>>,
     runtime_running: Arc<RwLock<bool>>,
@@ -255,20 +256,24 @@ impl ApiState {
     /// Create a state with optional protocol backend.
     pub fn with_protocol(protocol: Option<Arc<dyn ProtocolBackend>>) -> Self {
         let events = EventBus::new(EVENT_BROADCAST_CAPACITY);
+        let (protocol_events, mut protocol_rx) = broadcast::channel(EVENT_BROADCAST_CAPACITY);
         let (dispatch_tx, mut dispatch_rx) = mpsc::channel(EVENT_DISPATCH_CAPACITY);
         let broadcaster = events.clone();
         tokio::spawn(async move {
             while let Some(event) = dispatch_rx.recv().await {
-                let _ = broadcaster.publish(EventEnvelope::new(
-                    "api",
-                    "protocol-event",
-                    event,
-                ));
+                let _ = broadcaster.publish(EventEnvelope::new("api", "protocol-event", event));
+            }
+        });
+        let protocol_relay = events.clone();
+        tokio::spawn(async move {
+            while let Ok(event) = protocol_rx.recv().await {
+                let _ = protocol_relay.publish(EventEnvelope::new("protocol", "event", event));
             }
         });
 
         Self {
             events,
+            protocol_events,
             dispatch_tx,
             protocol,
             runtime_running: Arc::new(RwLock::new(false)),
@@ -346,6 +351,11 @@ impl ApiState {
                 "event dispatch timed out",
             ))),
         }
+    }
+
+    /// Broadcast sender for protocol event stream.
+    fn protocol_event_sender(&self) -> broadcast::Sender<ProtocolEvent> {
+        self.protocol_events.clone()
     }
 }
 
@@ -574,9 +584,11 @@ async fn get_group_info(
         .iter()
         .find(|group| group.group_id == requested_group_id)
         .or_else(|| {
-            fallback_groups
-                .as_ref()
-                .and_then(|fallback| fallback.iter().find(|group| group.group_id == requested_group_id))
+            fallback_groups.as_ref().and_then(|fallback| {
+                fallback
+                    .iter()
+                    .find(|group| group.group_id == requested_group_id)
+            })
         });
 
     if let Some(group) = candidate {
@@ -752,7 +764,7 @@ pub async fn run_with_state(addr: &str, state: ApiState) -> ProtocolResult<()> {
     state.set_runtime_running(true).await;
     if let Some(protocol) = state.protocol.clone() {
         protocol
-            .listen(state.events.clone())
+            .listen(state.protocol_event_sender())
             .await
             .map_err(|error| {
                 ProtocolError::Transport(format!("protocol listen failed: {error}"))

@@ -12,6 +12,9 @@ napcat-core = { path = "../crates/core" }
 napcat-message = { path = "../crates/message" }
 napcat-protocol = { path = "../crates/protocol" }
 napcat-api = { path = "../crates/api" }
+serde_json.workspace = true
+axum.workspace = true
+tower = "0.5"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["async_tokio"] }
