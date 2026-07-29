@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::VecDeque,
+    net::Shutdown,
     time::{Duration, SystemTime},
 };
 use thiserror::Error;
@@ -124,6 +125,9 @@ pub trait QQClient: Send + Sync {
 
     /// 心跳 tick，允许外层服务刷新会话活性。
     async fn heartbeat(&self, interval: Duration) -> QQClientResult<()>;
+
+    /// 断开会话并释放底层资源。
+    async fn disconnect(&self) -> QQClientResult<()>;
 }
 
 /// In-memory mock implementation used for protocol tests and offline validation.
@@ -231,6 +235,19 @@ impl QQClient for MockQQClient {
         *self.timeout_ms.lock().await = interval_ms;
         Ok(())
     }
+
+    async fn disconnect(&self) -> QQClientResult<()> {
+        let mut state = self.state.lock().await;
+        *state = ConnectionState::Disconnected;
+        let mut sent_packets = self.sent_packets.lock().await;
+        sent_packets.clear();
+        let mut inbound_packets = self.inbound_packets.lock().await;
+        inbound_packets.clear();
+        *self.endpoint.lock().await = None;
+        *self.token.lock().await = None;
+        *self.heartbeat_at.lock().await = None;
+        Ok(())
+    }
 }
 
 impl MockQQClient {
@@ -261,13 +278,6 @@ impl MockQQClient {
             *self.state.lock().await,
             ConnectionState::LoggedIn
         ))
-    }
-
-    /// Disconnect and release all runtime state, keeping telemetry values.
-    pub async fn disconnect(&self) -> QQClientResult<()> {
-        let mut state = self.state.lock().await;
-        *state = ConnectionState::Disconnected;
-        Ok(())
     }
 
     /// Whether heartbeat has been triggered at least once.
@@ -389,6 +399,10 @@ impl TcpQQClient {
     }
 
     async fn recv_once_with_timeout(&self) -> QQClientResult<Option<Packet>> {
+        if !self.is_session_open().await {
+            return Ok(None);
+        }
+
         let timeout_ms = *self.timeout_ms.lock().await;
         let mut stream = self.stream.lock().await;
         let stream = match stream.as_mut() {
@@ -577,6 +591,23 @@ impl QQClient for TcpQQClient {
         })?;
         Ok(())
     }
+
+    async fn disconnect(&self) -> QQClientResult<()> {
+        self.set_state(ConnectionState::Closing).await;
+        {
+            let mut stream = self.stream.lock().await;
+            if let Some(stream) = stream.as_mut() {
+                let _ = stream.shutdown(Shutdown::Both);
+            }
+            stream.take();
+        }
+
+        *self.endpoint.lock().await = None;
+        *self.token.lock().await = None;
+        *self.heartbeat_at.lock().await = None;
+        self.set_state(ConnectionState::Disconnected).await;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -627,6 +658,40 @@ mod tests {
             .await?
             .expect("received packet should exist");
         assert_eq!(received.route, "message.send");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mock_client_disconnect_clears_runtime_state() -> QQClientResult<()> {
+        let client = MockQQClient::default();
+        client.connect(QQClientConfig::new("mock://localhost")).await?;
+        client.login("alice", "secret").await?;
+        client
+            .send_packet(Packet::new("message.send", r#"{"text":"hi"}"#))
+            .await?;
+        client
+            .heartbeat(Duration::from_millis(10))
+            .await
+            .expect("heartbeat after login");
+        client
+            .inject_packet(Packet::new("message.received", r#"{"id":"m1","sender_id":"u1","recipient":{"private":{"user_id":"alice"}},"elements":[]}"#))
+            .await;
+
+        assert_eq!(client.state().await, ConnectionState::LoggedIn);
+        assert!(!client.sent_packets().await.is_empty());
+        assert!(client.token().await.is_some());
+
+        client.disconnect().await?;
+        assert_eq!(client.state().await, ConnectionState::Disconnected);
+        assert!(client.sent_packets().await.is_empty());
+        assert_eq!(client.token().await, None);
+        assert!(!client.has_heartbeat().await);
+        assert!(client.receive_packet().await?.is_none());
+
+        let result = client
+            .send_packet(Packet::new("message.send", r#"{"text":"hi"}"#))
+            .await;
+        assert!(matches!(result, Err(QQClientError::InvalidState(_))));
         Ok(())
     }
 
@@ -756,5 +821,202 @@ mod tests {
             .send_packet(Packet::new("message.send", r#"{"text":"hi"}"#))
             .await;
         assert!(matches!(result, Err(QQClientError::InvalidState(_))));
+    }
+
+    #[tokio::test]
+    async fn tcp_client_disconnect_clears_session() -> QQClientResult<()> {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|error| QQClientError::Transport(error.to_string()))?;
+        let local_addr = listener
+            .local_addr()
+            .map_err(|error| QQClientError::Transport(error.to_string()))?;
+
+        let accept = tokio::spawn(async move {
+            let (_stream, _) = listener
+                .accept()
+                .await
+                .expect("mock tcp stream accepted");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        });
+
+        let client = TcpQQClient::default();
+        client
+            .connect(QQClientConfig::new(format!("tcp://{}", local_addr)))
+            .await?;
+        assert_eq!(client.state().await, ConnectionState::Connected);
+
+        client.disconnect().await?;
+        assert_eq!(client.state().await, ConnectionState::Disconnected);
+        assert!(
+            client
+                .send_packet(Packet::new("message.send", r#"{"text":"hi"}"#))
+                .await
+                .is_err()
+        );
+        assert!(client.receive_packet().await?.is_none());
+
+        let _ = accept.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn tcp_client_receive_returns_none_after_disconnect() -> QQClientResult<()> {
+        use tokio::net::TcpListener;
+        use tokio::time::timeout;
+        use tokio::io::AsyncReadExt;
+        use std::sync::Arc;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|error| QQClientError::Transport(error.to_string()))?;
+        let local_addr = listener
+            .local_addr()
+            .map_err(|error| QQClientError::Transport(error.to_string()))?;
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener
+                .accept()
+                .await
+                .expect("mock tcp stream accepted");
+
+            let mut buffer = [0_u8; 1024];
+            loop {
+                match stream.read(&mut buffer).await {
+                    Ok(0) => break,
+                    Ok(_) => continue,
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let client = Arc::new(TcpQQClient::default());
+        client
+            .connect(QQClientConfig::new(format!("tcp://{}", local_addr)))
+            .await?;
+        assert_eq!(client.state().await, ConnectionState::Connected);
+
+        let recv_fut = tokio::spawn({
+            let client = client.clone();
+            async move { client.receive_packet().await }
+        });
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        client.disconnect().await?;
+
+        let got = timeout(Duration::from_millis(200), recv_fut)
+            .await
+            .expect("receive should finish after disconnect")
+            .expect("receive task join ok")?;
+        assert!(matches!(got, None));
+
+        let _ = server.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn tcp_client_reconnect_can_receive_again_after_disconnect() -> QQClientResult<()> {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|error| QQClientError::Transport(error.to_string()))?;
+        let local_addr = listener
+            .local_addr()
+            .map_err(|error| QQClientError::Transport(error.to_string()))?;
+
+        let connections = Arc::new(AtomicUsize::new(0));
+        let connections_server = connections.clone();
+
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (stream, _) = listener
+                    .accept()
+                    .await
+                    .expect("mock tcp stream accepted");
+
+                let attempt = connections_server.fetch_add(1, Ordering::SeqCst);
+                let (read_half, mut write_half) = stream.into_split();
+                let mut reader = BufReader::new(read_half);
+
+                let mut line = String::new();
+                let _ = reader
+                    .read_line(&mut line)
+                    .await
+                    .expect("should receive login packet");
+                let login_packet = decode_packet(line.trim_end());
+                assert_eq!(login_packet.route, "auth.login");
+
+                let login_response = build_wire_line(
+                    "auth.ok",
+                    r#"{"token":"server-token","uid":"alice"}"#,
+                );
+                write_half
+                    .write_all(format!("{login_response}\n").as_bytes())
+                    .await
+                    .expect("should write login response");
+                write_half
+                    .flush()
+                    .await
+                    .expect("should flush login response");
+
+                if attempt > 0 {
+                    let mut send_line = String::new();
+                    let _ = reader
+                        .read_line(&mut send_line)
+                        .await
+                        .expect("should receive client packet after reconnect");
+                    let send_packet = decode_packet(send_line.trim_end());
+                    assert_eq!(send_packet.route, "message.send");
+
+                    let frame = build_wire_line(
+                        "message.received",
+                        r#"{"id":"m2","sender_id":"server","recipient":{"private":{"user_id":"alice"}},"elements":[{"type":"text","text":"reply"}]}"#,
+                    );
+                    write_half
+                        .write_all(format!("{frame}\n").as_bytes())
+                        .await
+                        .expect("should write reconnect event");
+                    write_half
+                        .flush()
+                        .await
+                        .expect("should flush reconnect event");
+                }
+            }
+        });
+
+        let client = TcpQQClient::default();
+        client
+            .connect(QQClientConfig::new(format!("tcp://{}", local_addr)))
+            .await?;
+        assert_eq!(client.state().await, ConnectionState::Connected);
+        let token = client.login("alice", "secret").await?;
+        assert_eq!(token, "server-token");
+
+        client.disconnect().await?;
+        assert_eq!(client.state().await, ConnectionState::Disconnected);
+
+        client
+            .connect(QQClientConfig::new(format!("tcp://{}", local_addr)))
+            .await?;
+        assert_eq!(client.state().await, ConnectionState::Connected);
+        let token = client.login("alice", "secret").await?;
+        assert_eq!(token, "server-token");
+
+        client
+            .send_packet(Packet::new("message.send", r#"{"text":"again"}"#))
+            .await?;
+        let incoming = client.receive_packet().await?;
+        let incoming = incoming.expect("should receive packet");
+        assert_eq!(incoming.route, "message.received");
+
+        client.disconnect().await?;
+        let _ = server.await;
+        assert_eq!(connections.load(Ordering::SeqCst), 2);
+        Ok(())
     }
 }

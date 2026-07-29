@@ -166,6 +166,7 @@ pub struct QQClientBackend {
     client: Arc<dyn QQClient>,
     config: Arc<tokio::sync::Mutex<QQClientBackendConfig>>,
     connected: Arc<AtomicBool>,
+    logged_in: Arc<AtomicBool>,
     listening: Arc<AtomicBool>,
     stop_requested: Arc<AtomicBool>,
     listen_task: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>>,
@@ -178,6 +179,7 @@ impl QQClientBackend {
             client,
             config: Arc::new(tokio::sync::Mutex::new(config)),
             connected: Arc::new(AtomicBool::new(false)),
+            logged_in: Arc::new(AtomicBool::new(false)),
             listening: Arc::new(AtomicBool::new(false)),
             stop_requested: Arc::new(AtomicBool::new(false)),
             listen_task: Arc::new(tokio::sync::Mutex::new(None)),
@@ -769,21 +771,44 @@ impl ProtocolBackend for QQClientBackend {
     }
 
     async fn connect(&self, endpoint: &str) -> ProtocolResult<()> {
+        self.stop_requested.store(false, Ordering::Release);
+        self.connected.store(false, Ordering::Release);
+        self.listening.store(false, Ordering::Release);
+        self.logged_in.store(false, Ordering::Release);
+        let mut task = self.listen_task.lock().await;
+        if let Some(handle) = task.take() {
+            handle.abort();
+        }
+
+        let _ = self.client.disconnect().await;
+
         let config = self.build_connect_config(endpoint).await?;
+        let (account, password) = {
+            let values = self.config.lock().await;
+            (values.account.clone(), values.password.clone())
+        };
+
+        let has_credentials = account.is_some() && password.is_some();
+        if !has_credentials && config.endpoint != "mock://localhost" {
+            {
+                let mut values = self.config.lock().await;
+                values.endpoint = config.endpoint.clone();
+            }
+            return Err(ProtocolError::Transport(String::from(
+                "qq account/password are required for non-mock endpoints",
+            )));
+        }
+
+        {
+            let mut values = self.config.lock().await;
+            values.endpoint = config.endpoint.clone();
+        }
+
         self.client
             .connect(config.clone())
             .await
             .map_err(map_qq_error)?;
 
-        let (account, password, endpoint) = {
-            let values = self.config.lock().await;
-            (
-                values.account.clone(),
-                values.password.clone(),
-                values.endpoint.clone(),
-            )
-        };
-        let has_credentials = account.is_some() && password.is_some();
         if has_credentials {
             let account = account.expect("account checked");
             let password = password.expect("password checked");
@@ -791,10 +816,7 @@ impl ProtocolBackend for QQClientBackend {
                 .login(&account, &password)
                 .await
                 .map_err(map_qq_error)?;
-        } else if endpoint != "mock://localhost" {
-            return Err(ProtocolError::Transport(String::from(
-                "qq account/password are required for non-mock endpoints",
-            )));
+            self.logged_in.store(true, Ordering::Release);
         }
 
         self.connected.store(true, Ordering::Release);
@@ -803,14 +825,28 @@ impl ProtocolBackend for QQClientBackend {
     }
 
     async fn disconnect(&self) -> ProtocolResult<()> {
-        self.connected.store(false, Ordering::Release);
         self.stop_requested.store(true, Ordering::Release);
+        self.connected.store(false, Ordering::Release);
         self.listening.store(false, Ordering::Release);
+        self.logged_in.store(false, Ordering::Release);
+
+        let mut task = self.listen_task.lock().await;
+        if let Some(handle) = task.take() {
+            handle.abort();
+        }
+
+        self.client
+            .disconnect()
+            .await
+            .map_err(map_qq_error)?;
         Ok(())
     }
 
     async fn is_logged_in(&self) -> ProtocolResult<bool> {
-        Ok(self.connected.load(Ordering::Acquire))
+        if !self.connected.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        Ok(self.logged_in.load(Ordering::Acquire))
     }
 
     async fn send_message(&self, message: Message) -> ProtocolResult<()> {
@@ -929,7 +965,7 @@ where
 mod tests {
     use super::*;
     use napcat_message::{EchoHandler, MessageRecipient};
-    use napcat_qq_client::MockQQClient;
+    use napcat_qq_client::{ConnectionState, MockQQClient};
     use std::sync::Arc;
 
     #[tokio::test]
@@ -1011,6 +1047,7 @@ mod tests {
 
         backend.connect("mock://localhost").await?;
         backend.listen(event_tx).await?;
+        assert!(backend.is_logged_in().await?);
 
         client
             .inject_packet(Packet::new(QQ_CLIENT_PACKET_MESSAGE_INCOMING, r#"{"id":"m1","sender_id":"u1","recipient":{"private":{"user_id":"alice"}},"elements":[{"type":"text","text":"hello"}]}"#))
@@ -1019,6 +1056,13 @@ mod tests {
             .recv()
             .await
             .map_err(|error| ProtocolError::Transport(error.to_string()))?;
+        let incoming = match incoming {
+            ProtocolEvent::Connected { .. } => event_rx
+                .recv()
+                .await
+                .map_err(|error| ProtocolError::Transport(error.to_string()))?,
+            value => value,
+        };
         match incoming {
             ProtocolEvent::MessageReceived { message } => {
                 assert_eq!(message.id, "m1");
@@ -1040,6 +1084,242 @@ mod tests {
             1
         );
         backend.disconnect().await?;
+        assert_eq!(client.state().await, ConnectionState::Disconnected);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn qq_client_backend_connect_without_credentials_reports_not_logged_in() -> ProtocolResult<()> {
+        let backend = QQClientBackend::new(Arc::new(MockQQClient::default()), QQClientBackendConfig::new("mock://localhost"));
+
+        backend.connect("mock://localhost").await?;
+        assert!(!backend.is_logged_in().await?);
+        backend.disconnect().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn qq_client_backend_connect_non_mock_without_credentials_is_rejected() -> ProtocolResult<()> {
+        let backend = QQClientBackend::new(
+            Arc::new(MockQQClient::default()),
+            QQClientBackendConfig::new("mock://localhost"),
+        );
+
+        let result = backend.connect("tcp://127.0.0.1:12345").await;
+        assert!(result.is_err());
+        if let Err(ProtocolError::Transport(message)) = result {
+            assert!(message.contains("qq account/password are required for non-mock endpoints"));
+        } else {
+            panic!("expected transport error for non-mock endpoint without credentials");
+        }
+
+        assert!(!backend.connected.load(Ordering::Acquire));
+        assert!(!backend.listening.load(Ordering::Acquire));
+        assert!(!backend.is_logged_in().await?);
+
+        let config = backend.config.lock().await;
+        assert_eq!(config.endpoint, "tcp://127.0.0.1:12345");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn qq_client_backend_connect_failure_aborts_existing_listen_task() -> ProtocolResult<()> {
+        let backend = QQClientBackend::new(
+            Arc::new(MockQQClient::default()),
+            QQClientBackendConfig::new("mock://localhost"),
+        );
+        let (event_tx, _event_rx) = broadcast::channel(8);
+
+        backend.connect("mock://localhost").await?;
+        backend.listen(event_tx).await?;
+        assert!(backend.connected.load(Ordering::Acquire));
+        assert!(backend.listening.load(Ordering::Acquire));
+
+        let err = backend.connect("tcp://127.0.0.1:5555").await;
+        assert!(err.is_err());
+
+        assert!(!backend.connected.load(Ordering::Acquire));
+        assert!(!backend.listening.load(Ordering::Acquire));
+        assert!(!backend.stop_requested.load(Ordering::Acquire));
+        let task = backend.listen_task.lock().await;
+        assert!(task.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn qq_client_backend_reconnect_after_disconnect() -> ProtocolResult<()> {
+        let client = Arc::new(MockQQClient::default());
+        let config = QQClientBackendConfig::new("mock://localhost").with_credentials("alice", "secret");
+        let backend = QQClientBackend::new(client.clone(), config);
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+
+        backend.connect("mock://localhost").await?;
+        backend.listen(event_tx.clone()).await?;
+        assert!(backend.is_logged_in().await?);
+        client
+            .inject_packet(Packet::new(QQ_CLIENT_PACKET_MESSAGE_INCOMING, r#"{"id":"m1","sender_id":"u1","recipient":{"private":{"user_id":"alice"}},"elements":[{"type":"text","text":"first"}]}"#))
+            .await;
+        let first = event_rx
+            .recv()
+            .await
+            .map_err(|error| ProtocolError::Transport(error.to_string()))?;
+        let first = match first {
+            ProtocolEvent::Connected { .. } => event_rx
+                .recv()
+                .await
+                .map_err(|error| ProtocolError::Transport(error.to_string()))?,
+            value => value,
+        };
+        match first {
+            ProtocolEvent::MessageReceived { message } => {
+                assert_eq!(message.id, "m1");
+            }
+            _ => panic!("expected MessageReceived event before disconnect"),
+        }
+
+        backend.disconnect().await?;
+        assert!(!backend.is_logged_in().await?);
+
+        backend.connect("mock://localhost").await?;
+        backend.listen(event_tx).await?;
+        assert!(backend.is_logged_in().await?);
+        client
+            .inject_packet(Packet::new(QQ_CLIENT_PACKET_MESSAGE_INCOMING, r#"{"id":"m2","sender_id":"u2","recipient":{"private":{"user_id":"alice"}},"elements":[{"type":"text","text":"second"}]}"#))
+            .await;
+        let second = event_rx
+            .recv()
+            .await
+            .map_err(|error| ProtocolError::Transport(error.to_string()))?;
+        let second = match second {
+            ProtocolEvent::Connected { .. } => event_rx
+                .recv()
+                .await
+                .map_err(|error| ProtocolError::Transport(error.to_string()))?,
+            value => value,
+        };
+        match second {
+            ProtocolEvent::MessageReceived { message } => {
+                assert_eq!(message.id, "m2");
+            }
+            _ => panic!("expected MessageReceived event after reconnect"),
+        }
+
+        backend.disconnect().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn qq_client_backend_reconnect_with_new_listener() -> ProtocolResult<()> {
+        let client = Arc::new(MockQQClient::default());
+        let config = QQClientBackendConfig::new("mock://localhost").with_credentials("alice", "secret");
+        let backend = QQClientBackend::new(client.clone(), config);
+
+        backend.connect("mock://localhost").await?;
+        let (first_tx, mut first_rx) = broadcast::channel(8);
+        backend.listen(first_tx).await?;
+        assert!(backend.is_logged_in().await?);
+
+        client
+            .inject_packet(Packet::new(QQ_CLIENT_PACKET_MESSAGE_INCOMING, r#"{"id":"m1","sender_id":"u1","recipient":{"private":{"user_id":"alice"}},"elements":[{"type":"text","text":"first"}]}"#))
+            .await;
+        let first = first_rx
+            .recv()
+            .await
+            .map_err(|error| ProtocolError::Transport(error.to_string()))?;
+        let first = match first {
+            ProtocolEvent::Connected { .. } => first_rx
+                .recv()
+                .await
+                .map_err(|error| ProtocolError::Transport(error.to_string()))?,
+            value => value,
+        };
+        match first {
+            ProtocolEvent::MessageReceived { message } => assert_eq!(message.id, "m1"),
+            _ => panic!("expected MessageReceived event in first listen session"),
+        }
+
+        backend.disconnect().await?;
+        assert!(!backend.is_logged_in().await?);
+
+        backend.connect("mock://localhost").await?;
+        let (second_tx, mut second_rx) = broadcast::channel(8);
+        backend.listen(second_tx).await?;
+        assert!(backend.is_logged_in().await?);
+
+        client
+            .inject_packet(Packet::new(QQ_CLIENT_PACKET_MESSAGE_INCOMING, r#"{"id":"m2","sender_id":"u2","recipient":{"private":{"user_id":"alice"}},"elements":[{"type":"text","text":"second"}]}"#))
+            .await;
+        let second = second_rx
+            .recv()
+            .await
+            .map_err(|error| ProtocolError::Transport(error.to_string()))?;
+        let second = match second {
+            ProtocolEvent::Connected { .. } => second_rx
+                .recv()
+                .await
+                .map_err(|error| ProtocolError::Transport(error.to_string()))?,
+            value => value,
+        };
+        match second {
+            ProtocolEvent::MessageReceived { message } => assert_eq!(message.id, "m2"),
+            _ => panic!("expected MessageReceived event in second listen session"),
+        }
+
+        backend.disconnect().await?;
+        assert_eq!(client.state().await, ConnectionState::Disconnected);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn qq_client_backend_connect_overwrites_stale_client_session() -> ProtocolResult<()> {
+        let client = Arc::new(MockQQClient::default());
+        let config = QQClientBackendConfig::new("mock://localhost").with_credentials("alice", "secret");
+        let backend = QQClientBackend::new(client.clone(), config);
+
+        backend.connect("mock://localhost").await?;
+        assert_eq!(client.state().await, ConnectionState::LoggedIn);
+        assert!(backend.connected.load(Ordering::Acquire));
+
+        backend.connect("mock://localhost").await?;
+        assert!(backend.connected.load(Ordering::Acquire));
+        assert!(backend.is_logged_in().await?);
+        assert_eq!(client.state().await, ConnectionState::LoggedIn);
+
+        backend.disconnect().await?;
+        assert_eq!(client.state().await, ConnectionState::Disconnected);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn qq_client_backend_disconnect_then_reconnect_keeps_state_consistent() -> ProtocolResult<()> {
+        let client = Arc::new(MockQQClient::default());
+        let config = QQClientBackendConfig::new("mock://localhost").with_credentials("alice", "secret");
+        let backend = QQClientBackend::new(client.clone(), config);
+
+        backend.connect("mock://localhost").await?;
+        assert!(backend.connected.load(Ordering::Acquire));
+        assert!(!backend.listening.load(Ordering::Acquire));
+        assert!(backend.is_logged_in().await?);
+
+        let (event_tx, mut _event_rx) = broadcast::channel(4);
+        backend.listen(event_tx).await?;
+        assert!(backend.listening.load(Ordering::Acquire));
+
+        backend.disconnect().await?;
+        assert!(!backend.connected.load(Ordering::Acquire));
+        assert!(!backend.listening.load(Ordering::Acquire));
+        assert!(!backend.is_logged_in().await?);
+        assert!(backend.stop_requested.load(Ordering::Acquire));
+
+        backend.connect("mock://localhost").await?;
+        assert!(backend.connected.load(Ordering::Acquire));
+        assert!(!backend.listening.load(Ordering::Acquire));
+        assert!(!backend.stop_requested.load(Ordering::Acquire));
+        assert!(backend.is_logged_in().await?);
+
+        backend.disconnect().await?;
+        assert_eq!(client.state().await, ConnectionState::Disconnected);
         Ok(())
     }
 }
