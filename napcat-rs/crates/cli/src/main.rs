@@ -6,7 +6,7 @@ use napcat_config::AppConfig;
 use napcat_protocol::{
     OneBotBackendConfig, OneBotHttpBackend, ProtocolBackend, QQClientBackend, QQClientBackendConfig,
 };
-use napcat_qq_client::MockQQClient;
+use napcat_qq_client::{MockQQClient, TcpQQClient};
 use std::{process, sync::Arc};
 
 #[derive(Debug, Parser)]
@@ -109,10 +109,13 @@ async fn run_app(args: Args) -> Result<(), String> {
                 .with_credentials(account, password)
                 .with_connect_timeout_ms(2_000)
                 .with_listen_poll_ms(config.protocol_listen_timeout_ms);
-            let backend = Arc::new(QQClientBackend::new(
-                Arc::new(MockQQClient::default()),
-                backend_config,
-            ));
+
+            let client = if config.protocol_endpoint.trim_start().starts_with("tcp://") {
+                Arc::new(TcpQQClient::default()) as Arc<dyn napcat_qq_client::QQClient>
+            } else {
+                Arc::new(MockQQClient::default()) as Arc<dyn napcat_qq_client::QQClient>
+            };
+            let backend = Arc::new(QQClientBackend::new(client, backend_config));
             backend
                 .connect(&config.protocol_endpoint)
                 .await

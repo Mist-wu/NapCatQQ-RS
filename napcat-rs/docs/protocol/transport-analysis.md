@@ -9,6 +9,7 @@
 ## 当前实现状态
 
 - `crates/qq-client`: 已提供 `QQClient` 抽象和 mock 实现。
+- `crates/qq-client`: 已新增 `TcpQQClient` 实现，支持 JSON-line socket 会话、登录握手与收发骨架，可用于真实端点接入替代。
 - `crates/protocol`: 已提供 `ProtocolBackend` 与 OneBot HTTP 适配器。
 - 统一事件总线：`EventBus`（`crates/event`）已作为 API 层事件分发载体。
 
@@ -25,6 +26,7 @@
   - 登录流程
   - 数据包编解码
   - 心跳与重连
+  - TCP 线协议连接与登录框架（阶段性）
   - 服务端状态机
 - 协议分层打包解析
   - 会话建立/鉴权帧

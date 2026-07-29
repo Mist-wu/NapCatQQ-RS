@@ -2,11 +2,17 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{
     collections::VecDeque,
     time::{Duration, SystemTime},
 };
 use thiserror::Error;
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    net::TcpStream,
+    time::timeout,
+};
 
 /// Result alias used by QQ client adapters.
 pub type QQClientResult<T> = std::result::Result<T, QQClientError>;
@@ -280,6 +286,295 @@ impl MockQQClient {
     }
 }
 
+/// JSON line framed TCP transport client.
+pub struct TcpQQClient {
+    endpoint: tokio::sync::Mutex<Option<String>>,
+    token: tokio::sync::Mutex<Option<String>>,
+    state: tokio::sync::Mutex<ConnectionState>,
+    heartbeat_at: tokio::sync::Mutex<Option<SystemTime>>,
+    timeout_ms: tokio::sync::Mutex<u64>,
+    stream: tokio::sync::Mutex<Option<TcpStream>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct TcpWirePacket {
+    route: String,
+    payload: String,
+}
+
+fn normalize_tcp_endpoint(raw: &str) -> QQClientResult<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(QQClientError::Transport(String::from(
+            "empty tcp endpoint",
+        )));
+    }
+
+    let without_scheme = trimmed
+        .split_once("://")
+        .map_or(trimmed, |(_, tail)| tail);
+    let host = without_scheme.split('?').next().unwrap_or_default();
+    let host = host.split('/').next().unwrap_or_default();
+    if host.trim().is_empty() {
+        return Err(QQClientError::Transport(String::from(
+            "invalid tcp endpoint",
+        )));
+    }
+    if !host.contains(':') {
+        return Err(QQClientError::Transport(format!(
+            "tcp endpoint requires host:port, got {host}"
+        )));
+    }
+
+    Ok(host.to_string())
+}
+
+fn build_wire_line(route: impl Into<String>, payload: impl Into<String>) -> String {
+    let frame = TcpWirePacket {
+        route: route.into(),
+        payload: payload.into(),
+    };
+    serde_json::to_string(&frame).expect("wire frame must serialize")
+}
+
+fn parse_wire_line(line: &str) -> QQClientResult<TcpWirePacket> {
+    serde_json::from_str::<TcpWirePacket>(line).map_err(|error| {
+        QQClientError::Protocol(format!("invalid wire packet format: {error}"))
+    })
+}
+
+fn effective_timeout_ms(raw: u64) -> u64 {
+    if raw == 0 {
+        2_000
+    } else {
+        raw
+    }
+}
+
+impl Default for TcpQQClient {
+    fn default() -> Self {
+        Self {
+            endpoint: tokio::sync::Mutex::new(None),
+            token: tokio::sync::Mutex::new(None),
+            state: tokio::sync::Mutex::new(ConnectionState::Disconnected),
+            heartbeat_at: tokio::sync::Mutex::new(None),
+            timeout_ms: tokio::sync::Mutex::new(2_000),
+            stream: tokio::sync::Mutex::new(None),
+        }
+    }
+}
+
+impl TcpQQClient {
+    /// Return current state for higher-level orchestrators.
+    pub async fn state(&self) -> ConnectionState {
+        self.state.lock().await.clone()
+    }
+
+    /// Return latest token value if available.
+    pub async fn token(&self) -> Option<String> {
+        self.token.lock().await.clone()
+    }
+
+    async fn is_session_open(&self) -> bool {
+        let state = self.state.lock().await;
+        matches!(
+            *state,
+            ConnectionState::Connected | ConnectionState::LoggedIn
+        )
+    }
+
+    async fn set_state(&self, state: ConnectionState) {
+        let mut current = self.state.lock().await;
+        *current = state;
+    }
+
+    async fn recv_once_with_timeout(&self) -> QQClientResult<Option<Packet>> {
+        let timeout_ms = *self.timeout_ms.lock().await;
+        let mut stream = self.stream.lock().await;
+        let stream = match stream.as_mut() {
+            Some(value) => value,
+            None => return Ok(None),
+        };
+
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        let read_result = timeout(Duration::from_millis(timeout_ms), reader.read_line(&mut line))
+            .await
+            .map_err(|_| QQClientError::Timeout(String::from("receive timeout")))?;
+        let read_count = read_result.map_err(|error| {
+            QQClientError::Transport(format!("read packet failed: {error}"))
+        })?;
+
+        if read_count == 0 {
+            return Ok(None);
+        }
+
+        let wire = parse_wire_line(line.trim_end())?;
+        Ok(Some(Packet {
+            route: wire.route,
+            payload: wire.payload,
+        }))
+    }
+
+    async fn wait_for_login_ack(&self) -> QQClientResult<String> {
+        let max_retries = 4;
+        for _ in 0..max_retries {
+            let packet = self
+                .recv_once_with_timeout()
+                .await?
+                .ok_or_else(|| QQClientError::Timeout(String::from("login ack timeout")))?;
+
+            match packet.route.as_str() {
+                "auth.ok" => {
+                    let payload = serde_json::from_str::<Value>(&packet.payload).map_err(|error| {
+                        QQClientError::Protocol(format!("invalid login payload: {error}"))
+                    })?;
+                    let token = payload
+                        .get("token")
+                        .and_then(Value::as_str)
+                        .unwrap_or("session")
+                        .to_string();
+                    *self.token.lock().await = Some(token.clone());
+                    return Ok(token);
+                }
+                "system.error" => {
+                    return Err(QQClientError::Login(packet.payload));
+                }
+                _ => continue,
+            }
+        }
+
+        Err(QQClientError::Timeout(String::from(
+            "login ack not received",
+        )))
+    }
+}
+
+#[async_trait]
+impl QQClient for TcpQQClient {
+    async fn connect(&self, config: QQClientConfig) -> QQClientResult<()> {
+        let current_state = self.state.lock().await.clone();
+        if matches!(current_state, ConnectionState::Connected | ConnectionState::LoggedIn) {
+            return Err(QQClientError::InvalidState(String::from(
+                "connection already active",
+            )));
+        }
+
+        let socket_addr = normalize_tcp_endpoint(&config.endpoint)?;
+        let timeout_ms = effective_timeout_ms(config.timeout_ms);
+        let deadline = Duration::from_millis(timeout_ms);
+
+        let stream = timeout(deadline, TcpStream::connect(socket_addr.clone()))
+            .await
+            .map_err(|_| {
+                QQClientError::Timeout(format!("connect timeout after {timeout_ms}ms"))
+            })?
+            .map_err(|error| QQClientError::Transport(error.to_string()))?;
+
+        *self.endpoint.lock().await = Some(config.endpoint.clone());
+        *self.timeout_ms.lock().await = timeout_ms;
+        *self.stream.lock().await = Some(stream);
+        self.set_state(ConnectionState::Connected).await;
+        Ok(())
+    }
+
+    async fn login(&self, account: &str, password: &str) -> QQClientResult<String> {
+        if !self.is_session_open().await {
+            return Err(QQClientError::InvalidState(String::from(
+                "must connect before login",
+            )));
+        }
+
+        if account.trim().is_empty() || password.trim().is_empty() {
+            return Err(QQClientError::Login(String::from(
+                "account and password required",
+            )));
+        }
+
+        let request = build_wire_line("auth.login", format!("{{\"account\":\"{account}\",\"password\":\"{password}\"}"));
+        {
+            let mut stream = self.stream.lock().await;
+            let stream = stream
+                .as_mut()
+                .ok_or_else(|| QQClientError::InvalidState(String::from("not connected")))?;
+
+            timeout(
+                Duration::from_millis(effective_timeout_ms(*self.timeout_ms.lock().await)),
+                async {
+                    stream
+                        .write_all(format!("{request}\n").as_bytes())
+                        .await?;
+                    stream.flush().await
+                },
+            )
+            .await
+            .map_err(|_| QQClientError::Timeout(String::from("login send timeout")))?
+            .map_err(|error| QQClientError::Transport(error.to_string()))?;
+        }
+
+        let token = self.wait_for_login_ack().await?;
+        self.set_state(ConnectionState::LoggedIn).await;
+        Ok(token)
+    }
+
+    async fn send_packet(&self, packet: Packet) -> QQClientResult<()> {
+        let state = self.state.lock().await;
+        if !matches!(*state, ConnectionState::LoggedIn) {
+            return Err(QQClientError::InvalidState(String::from(
+                "must login before sending packets",
+            )));
+        }
+        drop(state);
+
+        let raw = build_wire_line(&packet.route, &packet.payload);
+        let mut stream = self.stream.lock().await;
+        let stream = stream
+            .as_mut()
+            .ok_or_else(|| QQClientError::InvalidState(String::from("not connected")))?;
+
+        timeout(
+            Duration::from_millis(effective_timeout_ms(*self.timeout_ms.lock().await)),
+            async {
+                stream.write_all(format!("{raw}\n").as_bytes()).await?;
+                stream.flush().await
+            },
+        )
+        .await
+        .map_err(|_| QQClientError::Timeout(String::from("send timeout")))?
+        .map_err(|error| QQClientError::Transport(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn receive_packet(&self) -> QQClientResult<Option<Packet>> {
+        if !self.is_session_open().await {
+            return Ok(None);
+        }
+        self.recv_once_with_timeout().await
+    }
+
+    async fn heartbeat(&self, interval: Duration) -> QQClientResult<()> {
+        if !self.is_session_open().await {
+            return Err(QQClientError::InvalidState(String::from(
+                "must connect before heartbeat",
+            )));
+        }
+        if interval.is_zero() {
+            return Err(QQClientError::Timeout(String::from(
+                "heartbeat interval is zero",
+            )));
+        }
+
+        let payload = serde_json::json!({ "interval_ms": interval.as_millis() }).to_string();
+        let packet = Packet::new("system.heartbeat", payload);
+        self.send_packet(packet).await?;
+        *self.heartbeat_at.lock().await = Some(SystemTime::now());
+        *self.timeout_ms.lock().await = u64::try_from(interval.as_millis()).map_err(|error| {
+            QQClientError::Timeout(format!("heartbeat interval too long: {error}"))
+        })?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,6 +644,97 @@ mod tests {
         client.login("alice", "secret").await?;
         let result = client.heartbeat(Duration::from_millis(0)).await;
         assert!(matches!(result, Err(QQClientError::Timeout(_))));
+        Ok(())
+    }
+
+    fn decode_packet(raw: &str) -> Packet {
+        let value = serde_json::from_str::<TcpWirePacket>(raw)
+            .expect("wire packet should be valid json");
+        Packet {
+            route: value.route,
+            payload: value.payload,
+        }
+    }
+
+    #[tokio::test]
+    async fn tcp_client_connect_login_and_receive_message() -> QQClientResult<()> {
+        use tokio::io::{AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|error| QQClientError::Transport(error.to_string()))?;
+        let local_addr = listener
+            .local_addr()
+            .map_err(|error| QQClientError::Transport(error.to_string()))?;
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener
+                .accept()
+                .await
+                .expect("mock tcp stream accepted");
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            let mut line = String::new();
+
+            let read_count = reader
+                .read_line(&mut line)
+                .await
+                .expect("should receive login packet");
+            assert!(read_count > 0);
+            let login = decode_packet(line.trim_end());
+            assert_eq!(login.route, "auth.login");
+
+            let login_response = build_wire_line(
+                "auth.ok",
+                r#"{"token":"server-token","uid":"alice"}"#,
+            );
+            write_half
+                .write_all(format!("{login_response}\n").as_bytes())
+                .await
+                .expect("should write login response");
+            write_half.flush().await.expect("should flush login response");
+
+            let mut send_line = String::new();
+            let send_count = reader
+                .read_line(&mut send_line)
+                .await
+                .expect("should receive client message packet");
+            assert!(send_count > 0);
+            let send_packet = decode_packet(send_line.trim_end());
+            assert_eq!(send_packet.route, "message.send");
+
+            let echo = decode_packet(&build_wire_line(
+                "message.received",
+                r#"{"id":"m2","sender_id":"server","recipient":{"private":{"user_id":"alice"}},"elements":[{"type":"text","text":"reply"}]}"#,
+            ));
+            let frame = build_wire_line(echo.route, echo.payload);
+            write_half
+                .write_all(format!("{frame}\n").as_bytes())
+                .await
+                .expect("should write event");
+            write_half.flush().await.expect("should flush event");
+        });
+
+        let client = TcpQQClient::default();
+        client
+            .connect(QQClientConfig::new(format!("tcp://{}", local_addr)))
+            .await?;
+        assert_eq!(client.state().await, ConnectionState::Connected);
+        let token = client.login("alice", "secret").await?;
+        assert_eq!(token, "server-token");
+        assert_eq!(client.state().await, ConnectionState::LoggedIn);
+
+        client
+            .send_packet(Packet::new("message.send", r#"{"text":"hi"}"#))
+            .await?;
+        let incoming = client.receive_packet().await?;
+        assert!(incoming.is_some());
+
+        let inbound = incoming.expect("should get packet");
+        assert_eq!(inbound.route, "message.received");
+
+        let _ = server.await;
         Ok(())
     }
 }
