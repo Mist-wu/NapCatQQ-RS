@@ -468,7 +468,7 @@ fn storage_url_from_path(path: &Path) -> Result<String> {
             StorageError::Validation(String::from("database path contains non-utf8 characters"))
         })?;
     if path.is_absolute() {
-        Ok(format!("sqlite:///{path_text}"))
+        Ok(format!("sqlite:{path_text}"))
     } else {
         Ok(format!("sqlite://{path_text}"))
     }
