@@ -10,6 +10,12 @@
   - add dedicated test crate for runtime, API/protocol integration checks, and benchmarking lifecycle overhead.
   - add `runtime_pipeline` benchmark (`register_and_shutdown_runtime`) and align plugin loading API for test-safe phase injection.
   - record benchmark result: `register_and_shutdown_runtime 9.2008 µs .. 10.352 µs` in local CI-style validation.
+- docs: enrich stage-1 analysis mapping and add API/部署/测试报告文档补充 (`docs/original-analysis.md`)。
+- docs: add API 文档与接口清单（`/message/send`、`/send_msg`、`/send_private_msg`、`/send_group_msg`、`/message/listen`、WebSocket 等），并说明统一响应模型与错误码。
+- docs: add 部署手册（`docs/deploy.md`）与测试报告（`docs/test-report.md`）。
+- test: 记录 `cargo fmt --all -- --check`、`cargo clippy`、`cargo test --workspace --all-targets`、`cargo bench` 的云端执行结果，基准：
+  - `register_and_shutdown_runtime`: `9.5319 µs ~ 9.7830 µs`
+  - `register_and_shutdown_runtime_with_8_services`: `31.236 µs ~ 31.955 µs`
 
 ## [stage-2] 2026-07-29
 - Initialize workspace `napcat-rs` with crates: `core`, `protocol`, `message`, `api`, `plugin`, `storage`, `config`, `cli`.

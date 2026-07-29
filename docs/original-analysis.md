@@ -54,3 +54,12 @@
 - 目标仓库建议拆分为 `core` / `protocol` / `message` / `api` / `plugin` / `storage` / `config` / `cli`
 - 以事件驱动 runtime + trait 抽象重构，确保业务层与协议实现解耦
 - 可优先完成 `protocol` trait，再实现 `api`（HTTP + WebSocket）与统一消息模型
+
+## 与本项目模块映射（补充）
+
+- `packages/napcat-protocol` -> `napcat-rs/crates/protocol`
+- `packages/napcat-core` -> `napcat-rs/crates/core`
+- `packages/napcat-onebot` -> `napcat-rs/crates/api`
+- `packages/napcat-adapter` / 消息流 -> `napcat-rs/crates/protocol` + `napcat-rs/crates/message`
+- `packages/napcat-plugin-builtin` -> `napcat-rs/crates/plugin`
+- `packages/napcat-database` / 存储 -> `napcat-rs/crates/storage`
