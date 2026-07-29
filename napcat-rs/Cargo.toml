@@ -7,6 +7,7 @@ members = [
   "crates/plugin",
   "crates/storage",
   "crates/config",
+  "crates/qq-client",
   "crates/cli",
   "tests",
 ]
@@ -27,3 +28,4 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
 axum = "0.8"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate"] }
+thiserror = "2.0"

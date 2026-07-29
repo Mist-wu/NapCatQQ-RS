@@ -19,6 +19,10 @@
   - Add `Plugin` trait with `initialize`, `on_event`, and `shutdown` methods.
   - Map trait lifecycle to existing plugin backends via blanket implementation.
   - Add unit test verifying trait lifecycle passthrough for backend implementations.
+- feat(qq-client): add QQ client abstraction and mock implementation
+  - Add `QQClient` trait for connect/login/send_packet/receive_packet/heartbeat.
+  - Add `QQClientConfig`, `Packet`, `ConnectionState`, and mock adapter `MockQQClient`.
+  - Wire new crate into workspace members.
 - feat(ci): add GitHub Actions CI pipeline
   - Add workflow for `cargo fmt`, `cargo clippy`, and full test suite on push / pull request.
 - fix(clippy): make config tests compile clean under stricter clippy warnings
