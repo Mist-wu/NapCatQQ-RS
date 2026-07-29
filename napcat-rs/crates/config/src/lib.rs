@@ -19,6 +19,16 @@ pub struct AppConfig {
     pub log_level: String,
     /// Optional workspace database path.
     pub database_url: String,
+    /// Protocol backend mode.
+    pub protocol_mode: String,
+    /// Protocol endpoint URL for real backend mode.
+    pub protocol_endpoint: String,
+    /// Optional protocol access token.
+    pub protocol_access_token: Option<String>,
+    /// Protocol listener poll timeout.
+    pub protocol_listen_timeout_ms: u64,
+    /// Protocol listener max batch size.
+    pub protocol_listen_max_events: usize,
 }
 
 /// Partial config used for overlay merges.
@@ -28,6 +38,11 @@ pub struct AppConfigPatch {
     port: Option<u16>,
     log_level: Option<String>,
     database_url: Option<String>,
+    protocol_mode: Option<String>,
+    protocol_endpoint: Option<String>,
+    protocol_access_token: Option<Option<String>>,
+    protocol_listen_timeout_ms: Option<u64>,
+    protocol_listen_max_events: Option<usize>,
 }
 
 impl AppConfig {
@@ -88,6 +103,36 @@ impl AppConfig {
             patch.database_url = Some(database_url);
         }
 
+        if let Some(protocol_mode) = env_var_optional("NAPCAT_PROTOCOL_MODE") {
+            patch.protocol_mode = Some(protocol_mode);
+        }
+
+        if let Some(protocol_endpoint) = env_var_optional("NAPCAT_PROTOCOL_ENDPOINT") {
+            patch.protocol_endpoint = Some(protocol_endpoint);
+        }
+
+        if let Some(protocol_access_token) = env_var_optional("NAPCAT_PROTOCOL_ACCESS_TOKEN") {
+            patch.protocol_access_token = Some(Some(protocol_access_token));
+        }
+
+        if let Some(timeout_text) = env_var_optional("NAPCAT_PROTOCOL_LISTEN_TIMEOUT_MS") {
+            patch.protocol_listen_timeout_ms = Some(
+                timeout_text.parse::<u64>().map_err(|error| ConfigError::EnvParse {
+                    key: "NAPCAT_PROTOCOL_LISTEN_TIMEOUT_MS".to_string(),
+                    details: error.to_string(),
+                })?,
+            );
+        }
+
+        if let Some(max_events_text) = env_var_optional("NAPCAT_PROTOCOL_LISTEN_MAX_EVENTS") {
+            patch.protocol_listen_max_events = Some(
+                max_events_text.parse::<usize>().map_err(|error| ConfigError::EnvParse {
+                    key: "NAPCAT_PROTOCOL_LISTEN_MAX_EVENTS".to_string(),
+                    details: error.to_string(),
+                })?,
+            );
+        }
+
         Ok(patch)
     }
 
@@ -104,6 +149,21 @@ impl AppConfig {
         if let Some(database_url) = patch.database_url {
             self.database_url = database_url;
         }
+        if let Some(protocol_mode) = patch.protocol_mode {
+            self.protocol_mode = protocol_mode;
+        }
+        if let Some(protocol_endpoint) = patch.protocol_endpoint {
+            self.protocol_endpoint = protocol_endpoint;
+        }
+        if let Some(protocol_access_token) = patch.protocol_access_token {
+            self.protocol_access_token = protocol_access_token;
+        }
+        if let Some(protocol_listen_timeout_ms) = patch.protocol_listen_timeout_ms {
+            self.protocol_listen_timeout_ms = protocol_listen_timeout_ms;
+        }
+        if let Some(protocol_listen_max_events) = patch.protocol_listen_max_events {
+            self.protocol_listen_max_events = protocol_listen_max_events;
+        }
     }
 }
 
@@ -114,6 +174,11 @@ impl Default for AppConfig {
             port: 3000,
             log_level: "info".to_string(),
             database_url: "sqlite://./napcat.db".to_string(),
+            protocol_mode: String::from("mock"),
+            protocol_endpoint: String::new(),
+            protocol_access_token: None,
+            protocol_listen_timeout_ms: 600,
+            protocol_listen_max_events: 8,
         }
     }
 }

@@ -13,7 +13,9 @@ use axum::{
     routing::{get, post},
 };
 use napcat_message::{Message as NapMessage, MessageRecipient};
-use napcat_protocol::{ProtocolError, ProtocolEvent, ProtocolResult, serialize_event};
+use napcat_protocol::{
+    ProtocolBackend, ProtocolError, ProtocolEvent, ProtocolResult, serialize_event,
+};
 use serde::{Deserialize, Serialize};
 use tokio::{
     sync::{RwLock, broadcast, mpsc},
@@ -32,6 +34,7 @@ type SharedUsers = Arc<Vec<UserInfo>>;
 pub struct ApiState {
     events: broadcast::Sender<ProtocolEvent>,
     dispatch_tx: mpsc::Sender<ProtocolEvent>,
+    protocol: Option<Arc<dyn ProtocolBackend>>,
     runtime_running: Arc<RwLock<bool>>,
     runtime_groups: Arc<RwLock<SharedGroups>>,
     runtime_users: Arc<RwLock<SharedUsers>>,
@@ -168,6 +171,8 @@ pub enum ApiError {
     InvalidRequest(String),
     /// Event forwarding failed.
     EventDispatch(String),
+    /// Protocol backend send failed.
+    ProtocolSend(String),
 }
 
 impl fmt::Display for ApiError {
@@ -175,6 +180,7 @@ impl fmt::Display for ApiError {
         match self {
             ApiError::InvalidRequest(message) => write!(f, "invalid request: {message}"),
             ApiError::EventDispatch(message) => write!(f, "event dispatch failed: {message}"),
+            ApiError::ProtocolSend(message) => write!(f, "protocol send failed: {message}"),
         }
     }
 }
@@ -186,6 +192,7 @@ impl IntoResponse for ApiError {
         let (code, message) = match self {
             ApiError::InvalidRequest(message) => (StatusCode::BAD_REQUEST, message),
             ApiError::EventDispatch(message) => (StatusCode::SERVICE_UNAVAILABLE, message),
+            ApiError::ProtocolSend(message) => (StatusCode::BAD_GATEWAY, message),
         };
 
         let payload = ApiEnvelope {
@@ -204,6 +211,11 @@ type ApiResult<T> = Result<T, ApiError>;
 impl ApiState {
     /// Create a default state with empty cache values.
     pub fn new() -> Self {
+        Self::with_protocol(None)
+    }
+
+    /// Create a state with optional protocol backend.
+    pub fn with_protocol(protocol: Option<Arc<dyn ProtocolBackend>>) -> Self {
         let (events, _) = broadcast::channel(EVENT_BROADCAST_CAPACITY);
         let (dispatch_tx, mut dispatch_rx) = mpsc::channel(EVENT_DISPATCH_CAPACITY);
         let broadcaster = events.clone();
@@ -216,6 +228,7 @@ impl ApiState {
         Self {
             events,
             dispatch_tx,
+            protocol,
             runtime_running: Arc::new(RwLock::new(false)),
             runtime_groups: Arc::new(RwLock::new(Arc::new(Vec::new()))),
             runtime_users: Arc::new(RwLock::new(Arc::new(Vec::new()))),
@@ -519,6 +532,13 @@ async fn push_send_event(
     state: &ApiState,
     message: NapMessage,
 ) -> ApiResult<Json<ApiEnvelope<SendResponse>>> {
+    if let Some(protocol) = &state.protocol {
+        protocol
+            .send_message(message.clone())
+            .await
+            .map_err(|error| ApiError::ProtocolSend(format!("protocol send failed: {error}")))?;
+    }
+
     let message_id = message.id.clone();
     state
         .emit_event(ProtocolEvent::MessageReceived { message })
@@ -584,9 +604,23 @@ pub async fn run(addr: &str) -> ProtocolResult<()> {
     run_with_state(addr, ApiState::new()).await
 }
 
+/// Start API server with protocol backend and pre-created state.
+pub async fn run_with_protocol(
+    addr: &str,
+    protocol: Option<Arc<dyn ProtocolBackend>>,
+) -> ProtocolResult<()> {
+    run_with_state(addr, ApiState::with_protocol(protocol)).await
+}
+
 /// Start API server with a pre-created state.
 pub async fn run_with_state(addr: &str, state: ApiState) -> ProtocolResult<()> {
     state.set_runtime_running(true).await;
+    if let Some(protocol) = state.protocol.clone() {
+        protocol
+            .listen(state.events.clone())
+            .await
+            .map_err(|error| ProtocolError::Transport(format!("protocol listen failed: {error}")))?;
+    }
 
     let app = state.clone().router();
     let socket_addr = addr
