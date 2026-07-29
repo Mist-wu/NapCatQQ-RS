@@ -3,7 +3,10 @@
 use clap::Parser;
 use napcat_api::run_with_protocol;
 use napcat_config::AppConfig;
-use napcat_protocol::{OneBotBackendConfig, OneBotHttpBackend, ProtocolBackend};
+use napcat_protocol::{
+    OneBotBackendConfig, OneBotHttpBackend, ProtocolBackend, QQClientBackend, QQClientBackendConfig,
+};
+use napcat_qq_client::MockQQClient;
 use std::{process, sync::Arc};
 
 #[derive(Debug, Parser)]
@@ -85,6 +88,31 @@ async fn run_app(args: Args) -> Result<(), String> {
                 backend_config = backend_config.with_access_token(token);
             }
             let backend = Arc::new(OneBotHttpBackend::new(backend_config));
+            backend
+                .connect(&config.protocol_endpoint)
+                .await
+                .map_err(|error| format!("protocol connect failed: {error}"))?;
+            Some(backend as Arc<dyn ProtocolBackend>)
+        }
+        "qq" | "qq-client" | "qq_client" => {
+            if config.protocol_endpoint.trim().is_empty() {
+                return Err(String::from("protocol endpoint is required for qq mode"));
+            }
+            let account = config.qq_account.clone().ok_or_else(|| {
+                String::from("qq account is required for qq mode")
+            })?;
+            let password = config.qq_password.clone().ok_or_else(|| {
+                String::from("qq password is required for qq mode")
+            })?;
+
+            let backend_config = QQClientBackendConfig::new(config.protocol_endpoint.clone())
+                .with_credentials(account, password)
+                .with_connect_timeout_ms(2_000)
+                .with_listen_poll_ms(config.protocol_listen_timeout_ms);
+            let backend = Arc::new(QQClientBackend::new(
+                Arc::new(MockQQClient::default()),
+                backend_config,
+            ));
             backend
                 .connect(&config.protocol_endpoint)
                 .await

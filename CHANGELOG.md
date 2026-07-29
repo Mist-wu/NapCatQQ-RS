@@ -28,6 +28,8 @@
   - add `Storage` abstraction with async API and typed record model.
   - add input validation, namespace isolation, metadata timestamps, and clear/list/count operations.
   - add sqlite table initialization, atomic upsert, and deterministic test coverage for both backends.
+- feat(protocol): add QQ-client protocol adapter (`QQClientBackend`) with packet receive loop, incoming event mapping, and mock-backed adapter integration path.
+- feat(cli): add `protocol_mode` branch `qq`, `qq-client`, `qq_client` and wire QQ client backend construction from `NAPCAT_QQ_ACCOUNT`/`NAPCAT_QQ_PASSWORD`.
 
 ## [stage-2] 2026-07-29
 - Initialize workspace `napcat-rs` with crates: `core`, `protocol`, `message`, `api`, `plugin`, `storage`, `config`, `cli`.

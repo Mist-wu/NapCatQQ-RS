@@ -2,8 +2,9 @@
 
 use async_trait::async_trait;
 use napcat_message::{
-    Message, MessageElement, MessageHandler, MessageRecipient, MessageResult, encode_json,
+    decode_json, Message, MessageElement, MessageHandler, MessageRecipient, MessageResult, encode_json,
 };
+use napcat_qq_client::{Packet, QQClient, QQClientConfig, QQClientError};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -24,6 +25,12 @@ use tokio::{
 const DEFAULT_LISTEN_TIMEOUT_MS: u64 = 600;
 const DEFAULT_LISTEN_MAX_EVENTS: usize = 8;
 const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 1500;
+const QQ_DEFAULT_LISTEN_POLL_MS: u64 = 150;
+const QQ_CLIENT_PACKET_MESSAGE_ROUTE: &str = "message";
+const QQ_CLIENT_PACKET_MESSAGE_INCOMING: &str = "message.received";
+const QQ_CLIENT_PACKET_MESSAGE_ERROR: &str = "system.error";
+const QQ_CLIENT_PACKET_MESSAGE_CONNECTED: &str = "client.connected";
+const QQ_CLIENT_PACKET_MESSAGE_SESSION: &str = "client.session";
 
 /// Protocol capabilities.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -96,6 +103,136 @@ pub trait ProtocolBackend: Send + Sync {
 
     /// Emit protocol events.
     async fn listen(&self, notify: broadcast::Sender<ProtocolEvent>) -> ProtocolResult<()>;
+}
+
+/// QQ client integration configuration.
+#[derive(Debug, Clone)]
+pub struct QQClientBackendConfig {
+    /// QQ transport endpoint.
+    pub endpoint: String,
+    /// QQ account.
+    pub account: Option<String>,
+    /// QQ account secret.
+    pub password: Option<String>,
+    /// Login/connect timeout in milliseconds.
+    pub connect_timeout_ms: u64,
+    /// Poll interval for inbound packets in milliseconds.
+    pub listen_poll_ms: u64,
+}
+
+impl QQClientBackendConfig {
+    /// Build config using endpoint.
+    pub fn new(endpoint: impl Into<String>) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            account: None,
+            password: None,
+            connect_timeout_ms: 2_000,
+            listen_poll_ms: QQ_DEFAULT_LISTEN_POLL_MS,
+        }
+    }
+
+    /// Add login account and password.
+    pub fn with_credentials(mut self, account: impl Into<String>, password: impl Into<String>) -> Self {
+        let account = account.into();
+        let password = password.into();
+        self.account = Some(account);
+        self.password = Some(password);
+        self
+    }
+
+    /// Set connection timeout.
+    pub fn with_connect_timeout_ms(mut self, timeout_ms: u64) -> Self {
+        self.connect_timeout_ms = timeout_ms;
+        self
+    }
+
+    /// Set listen polling interval.
+    pub fn with_listen_poll_ms(mut self, poll_ms: u64) -> Self {
+        self.listen_poll_ms = poll_ms;
+        self
+    }
+}
+
+impl Default for QQClientBackendConfig {
+    fn default() -> Self {
+        Self::new(String::new())
+    }
+}
+
+/// QQ protocol backend powered by a [`QQClient`] adapter.
+#[derive(Clone)]
+pub struct QQClientBackend {
+    client: Arc<dyn QQClient>,
+    config: Arc<tokio::sync::Mutex<QQClientBackendConfig>>,
+    connected: Arc<AtomicBool>,
+    listening: Arc<AtomicBool>,
+    stop_requested: Arc<AtomicBool>,
+    listen_task: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>>,
+}
+
+impl QQClientBackend {
+    /// Build backend from explicit client implementation.
+    pub fn new(client: Arc<dyn QQClient>, config: QQClientBackendConfig) -> Self {
+        Self {
+            client,
+            config: Arc::new(tokio::sync::Mutex::new(config)),
+            connected: Arc::new(AtomicBool::new(false)),
+            listening: Arc::new(AtomicBool::new(false)),
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            listen_task: Arc::new(tokio::sync::Mutex::new(None)),
+        }
+    }
+
+    /// Derive a send packet for outgoing message delivery.
+    fn message_to_packet(message: Message) -> ProtocolResult<Packet> {
+        let payload = encode_json(&message).map_err(|error| ProtocolError::Serialization(error.to_string()))?;
+        let route = match &message.recipient {
+            MessageRecipient::Private { .. } => format!("{QQ_CLIENT_PACKET_MESSAGE_ROUTE}.private"),
+            MessageRecipient::Group { .. } => format!("{QQ_CLIENT_PACKET_MESSAGE_ROUTE}.group"),
+        };
+
+        Ok(Packet::new(route, payload))
+    }
+
+    /// Convert inbound QQ packet to protocol event stream.
+    fn decode_inbound_packet(packet: Packet) -> ProtocolResult<Option<ProtocolEvent>> {
+        match packet.route.as_str() {
+            QQ_CLIENT_PACKET_MESSAGE_INCOMING => decode_json(&packet.payload)
+                .map(|message| ProtocolEvent::MessageReceived { message })
+                .map_err(|error| ProtocolError::Serialization(error.to_string())),
+            QQ_CLIENT_PACKET_MESSAGE_CONNECTED => {
+                Ok(Some(ProtocolEvent::Connected { endpoint: packet.payload }))
+            }
+            QQ_CLIENT_PACKET_MESSAGE_SESSION => Ok(Some(ProtocolEvent::Connected { endpoint: packet.payload })),
+            QQ_CLIENT_PACKET_MESSAGE_ERROR => Ok(Some(ProtocolEvent::Warning {
+                message: packet.payload,
+            })),
+            _ => Ok(None),
+        }
+    }
+
+    async fn build_connect_config(&self, endpoint: &str) -> ProtocolResult<QQClientConfig> {
+        let config = {
+            let stored = self.config.lock().await;
+            let timeout_ms = stored.connect_timeout_ms;
+            QQClientConfig {
+                endpoint: if endpoint.trim().is_empty() {
+                    stored.endpoint.clone()
+                } else {
+                    endpoint.to_string()
+                },
+                token: None,
+                timeout_ms,
+            }
+        };
+        if config.endpoint.trim().is_empty() {
+            return Err(ProtocolError::Transport(String::from(
+                "empty qq endpoint",
+            )));
+        }
+        Ok(config)
+    }
 }
 
 /// In-memory mock backend for tests and adapters that don't need network.
@@ -617,6 +754,154 @@ impl ProtocolBackend for OneBotHttpBackend {
     }
 }
 
+#[async_trait]
+impl ProtocolBackend for QQClientBackend {
+    fn name(&self) -> &'static str {
+        "qq-client"
+    }
+
+    fn capabilities(&self) -> Vec<ProtocolCapability> {
+        vec![
+            ProtocolCapability::Message,
+            ProtocolCapability::Login,
+            ProtocolCapability::Meta,
+        ]
+    }
+
+    async fn connect(&self, endpoint: &str) -> ProtocolResult<()> {
+        let config = self.build_connect_config(endpoint).await?;
+        self.client
+            .connect(config.clone())
+            .await
+            .map_err(map_qq_error)?;
+
+        let (account, password, endpoint) = {
+            let values = self.config.lock().await;
+            (
+                values.account.clone(),
+                values.password.clone(),
+                values.endpoint.clone(),
+            )
+        };
+        let has_credentials = account.is_some() && password.is_some();
+        if has_credentials {
+            let account = account.expect("account checked");
+            let password = password.expect("password checked");
+            self.client
+                .login(&account, &password)
+                .await
+                .map_err(map_qq_error)?;
+        } else if endpoint != "mock://localhost" {
+            return Err(ProtocolError::Transport(String::from(
+                "qq account/password are required for non-mock endpoints",
+            )));
+        }
+
+        self.connected.store(true, Ordering::Release);
+        tracing::info!(endpoint = %config.endpoint, "connected to qq client backend");
+        Ok(())
+    }
+
+    async fn disconnect(&self) -> ProtocolResult<()> {
+        self.connected.store(false, Ordering::Release);
+        self.stop_requested.store(true, Ordering::Release);
+        self.listening.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    async fn is_logged_in(&self) -> ProtocolResult<bool> {
+        Ok(self.connected.load(Ordering::Acquire))
+    }
+
+    async fn send_message(&self, message: Message) -> ProtocolResult<()> {
+        if !self.connected.load(Ordering::Acquire) {
+            return Err(ProtocolError::Transport(String::from("protocol is not connected")));
+        }
+
+        let packet = Self::message_to_packet(message)?;
+        self.client
+            .send_packet(packet)
+            .await
+            .map_err(|error| ProtocolError::Transport(error.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn listen(&self, notify: broadcast::Sender<ProtocolEvent>) -> ProtocolResult<()> {
+        if !self.connected.load(Ordering::Acquire) {
+            return Err(ProtocolError::Transport(String::from(
+                "protocol is not connected",
+            )));
+        }
+
+        if self.listening.swap(true, Ordering::AcqRel) {
+            return Err(ProtocolError::Transport(String::from(
+                "listen already started",
+            )));
+        }
+
+        let backend = self.clone();
+        let mut task_guard = self.listen_task.lock().await;
+        let poll_ms = {
+            let config = self.config.lock().await;
+            config.listen_poll_ms
+        };
+
+        let handle = tokio::spawn(async move {
+            while backend.connected.load(Ordering::Acquire) && !backend.stop_requested.load(Ordering::Acquire) {
+                match backend.client.receive_packet().await {
+                    Ok(Some(packet)) => {
+                        match QQClientBackend::decode_inbound_packet(packet) {
+                            Ok(Some(event)) => {
+                                if notify.send(event).is_err() {
+                                    break;
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                let warning = ProtocolEvent::Warning {
+                                    message: format!("failed to parse inbound packet: {error}"),
+                                };
+                                let _ = notify.send(warning);
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        if poll_ms > 0 {
+                            sleep(Duration::from_millis(poll_ms)).await;
+                        }
+                    }
+                    Err(error) => {
+                        let warning = ProtocolEvent::Warning {
+                            message: format!("receive packet failed: {error}"),
+                        };
+                        let _ = notify.send(warning);
+                        if poll_ms > 0 {
+                            sleep(Duration::from_millis(poll_ms)).await;
+                        }
+                    }
+                }
+            }
+
+            let _ = notify.send(ProtocolEvent::Disconnected);
+            backend.listening.store(false, Ordering::Release);
+        });
+
+        *task_guard = Some(handle);
+        Ok(())
+    }
+}
+
+fn map_qq_error(error: QQClientError) -> ProtocolError {
+    match error {
+        QQClientError::Transport(message) => ProtocolError::Transport(message),
+        QQClientError::Protocol(message) => ProtocolError::Serialization(message),
+        QQClientError::Login(message) => ProtocolError::Transport(format!("login error: {message}")),
+        QQClientError::InvalidState(message) => ProtocolError::Transport(message),
+        QQClientError::Timeout(message) => ProtocolError::Transport(message),
+    }
+}
+
 /// Build message event from raw JSON.
 pub fn deserialize_event(payload: &str) -> ProtocolResult<ProtocolEvent> {
     serde_json::from_str(payload).map_err(|err| ProtocolError::Serialization(err.to_string()))
@@ -644,6 +929,8 @@ where
 mod tests {
     use super::*;
     use napcat_message::{EchoHandler, MessageRecipient};
+    use napcat_qq_client::MockQQClient;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn mock_protocol_has_caps() {
@@ -713,5 +1000,46 @@ mod tests {
 
         let plain = OneBotHttpBackend::message_to_plain_text(&message);
         assert!(plain.contains("[Video:/tmp/video.mp4]"));
+    }
+
+    #[tokio::test]
+    async fn qq_client_backend_connects_and_handles_messages() -> ProtocolResult<()> {
+        let client = Arc::new(MockQQClient::default());
+        let config = QQClientBackendConfig::new("mock://localhost").with_credentials("alice", "secret");
+        let backend = QQClientBackend::new(client.clone(), config);
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+
+        backend.connect("mock://localhost").await?;
+        backend.listen(event_tx).await?;
+
+        client
+            .inject_packet(Packet::new(QQ_CLIENT_PACKET_MESSAGE_INCOMING, r#"{"id":"m1","sender_id":"u1","recipient":{"private":{"user_id":"alice"}},"elements":[{"type":"text","text":"hello"}]}"#))
+            .await;
+        let incoming = event_rx
+            .recv()
+            .await
+            .map_err(|error| ProtocolError::Transport(error.to_string()))?;
+        match incoming {
+            ProtocolEvent::MessageReceived { message } => {
+                assert_eq!(message.id, "m1");
+            }
+            _ => panic!("expected MessageReceived event"),
+        }
+
+        let message = Message::text(
+            "m2",
+            "alice",
+            MessageRecipient::Private {
+                user_id: String::from("bob"),
+            },
+            "reply",
+        );
+        backend.send_message(message).await?;
+        assert_eq!(
+            client.sent_packets().await.len(),
+            1
+        );
+        backend.disconnect().await?;
+        Ok(())
     }
 }

@@ -12,3 +12,4 @@ tokio.workspace = true
 napcat-api = { path = "../api" }
 napcat-config = { path = "../config" }
 napcat-protocol = { path = "../protocol" }
+napcat-qq-client = { path = "../qq-client" }

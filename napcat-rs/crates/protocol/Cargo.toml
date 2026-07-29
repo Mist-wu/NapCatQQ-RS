@@ -13,3 +13,4 @@ serde_json.workspace = true
 thiserror = "2.0"
 tokio.workspace = true
 napcat-message = { path = "../message" }
+napcat-qq-client = { path = "../qq-client" }
