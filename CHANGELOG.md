@@ -18,3 +18,10 @@
   - broadcast shutdown channel orchestration,
   - service registration, async task registration, and graceful shutdown timeout logic,
   - runtime-level unit tests for invalid state guard and shutdown behavior.
+
+## [stage-3 config] 2026-07-29
+- Implemented `AppConfig` loading pipeline in `napcat-config`:
+  - default config values,
+  - optional file config from `NAPCAT_CONFIG_PATH`,
+  - environment overrides (`NAPCAT_HOST`, `NAPCAT_PORT`, `NAPCAT_LOG_LEVEL`, `NAPCAT_DATABASE_URL`),
+  - overlay merge + unit tests.
