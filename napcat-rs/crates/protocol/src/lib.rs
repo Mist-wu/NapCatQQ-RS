@@ -1,13 +1,11 @@
 //! Protocol abstraction layer and contracts.
 
 use async_trait::async_trait;
-use napcat_message::{encode_json, Message, MessageHandler, MessageResult};
+use napcat_message::{Message, MessageHandler, MessageResult, encode_json};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::{
-    sync::{broadcast, mpsc, Mutex},
-};
+use tokio::sync::{Mutex, broadcast, mpsc};
 
 /// Protocol capabilities.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -161,10 +159,7 @@ pub fn serialize_event(event: &ProtocolEvent) -> ProtocolResult<String> {
 }
 
 /// Generic protocol-to-handler bridge.
-pub async fn forward_to_handler<H>(
-    handler: &H,
-    event: ProtocolEvent,
-) -> MessageResult<String>
+pub async fn forward_to_handler<H>(handler: &H, event: ProtocolEvent) -> MessageResult<String>
 where
     H: MessageHandler,
 {

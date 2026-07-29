@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
-    sync::{broadcast, Mutex, RwLock},
+    sync::{Mutex, RwLock, broadcast},
     task::JoinHandle,
-    time::{timeout, Instant},
+    time::{Instant, timeout},
 };
 
 /// Core error type for runtime orchestration.
@@ -224,7 +224,7 @@ impl Runtime {
 mod tests {
     use super::*;
     use tokio::sync::mpsc;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     struct EchoService {
         id: &'static str,

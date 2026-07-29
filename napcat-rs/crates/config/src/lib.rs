@@ -1,8 +1,7 @@
 //! Configuration loading and environment/file override support.
 
 use std::{
-    env,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
 };
 
@@ -71,10 +70,12 @@ impl AppConfig {
         }
 
         if let Some(port_text) = env_var_optional("NAPCAT_PORT") {
-            let parsed = port_text.parse::<u16>().map_err(|error| ConfigError::EnvParse {
-                key: "NAPCAT_PORT".to_string(),
-                details: error.to_string(),
-            })?;
+            let parsed = port_text
+                .parse::<u16>()
+                .map_err(|error| ConfigError::EnvParse {
+                    key: "NAPCAT_PORT".to_string(),
+                    details: error.to_string(),
+                })?;
             patch.port = Some(parsed);
         }
 

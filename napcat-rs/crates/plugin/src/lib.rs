@@ -300,7 +300,7 @@ impl RustPlugin {
         event: Option<&PluginEvent>,
     ) -> PluginResult<Option<PluginAction>> {
         let mut command = Command::new(&self.executable);
-        command.arg(format!("--napcat-plugin-{phase}"));
+        command.env("NAPCAT_PLUGIN_PHASE", phase);
         command.args(self.args.iter().cloned());
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
@@ -663,8 +663,8 @@ mod tests {
         let definition = PluginDefinition {
             metadata: PluginMetadata::new("dup", "0.1.0"),
             source: PluginSource::Rust {
-                executable: PathBuf::from("/bin/true"),
-                args: Vec::new(),
+                executable: PathBuf::from("/bin/sh"),
+                args: vec![String::from("-c"), String::from("cat >/dev/null")],
                 timeout_ms: 200,
             },
             enabled: true,
@@ -684,8 +684,8 @@ mod tests {
         let definition = PluginDefinition {
             metadata: PluginMetadata::new("disabled", "0.1.0"),
             source: PluginSource::Rust {
-                executable: PathBuf::from("/bin/true"),
-                args: Vec::new(),
+                executable: PathBuf::from("/bin/sh"),
+                args: vec![String::from("-c"), String::from("cat >/dev/null")],
                 timeout_ms: 200,
             },
             enabled: false,
@@ -708,8 +708,8 @@ mod tests {
         let definition = PluginDefinition {
             metadata: PluginMetadata::new("silent", "0.1.0"),
             source: PluginSource::Rust {
-                executable: PathBuf::from("/bin/true"),
-                args: Vec::new(),
+                executable: PathBuf::from("/bin/sh"),
+                args: vec![String::from("-c"), String::from("cat >/dev/null")],
                 timeout_ms: 200,
             },
             enabled: true,

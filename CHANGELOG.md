@@ -6,6 +6,10 @@
 - Implement HTTP and WebSocket API module with login/message/group/user endpoints and runtime event stream, plus `SendRequest` serialization and endpoint tests.
 - Finalize API compatibility layer and stabilize API send/listen behavior: add response envelope serialization, protocol error conversion, and successful compatibility responses.
 - Implemented dynamic plugin architecture in `napcat-plugin`, including Rust/Wasm/HTTP plugin backends, async load/unload/dispatch APIs, plugin metadata/versioned definitions, and registry operations with unit tests.
+- Add stage-6 test infrastructure under `napcat-rs/tests` with unit tests, integration tests, and Criterion benchmark harness:
+  - add dedicated test crate for runtime, API/protocol integration checks, and benchmarking lifecycle overhead.
+  - add `runtime_pipeline` benchmark (`register_and_shutdown_runtime`) and align plugin loading API for test-safe phase injection.
+  - record benchmark result: `register_and_shutdown_runtime 9.2008 µs .. 10.352 µs` in local CI-style validation.
 
 ## [stage-2] 2026-07-29
 - Initialize workspace `napcat-rs` with crates: `core`, `protocol`, `message`, `api`, `plugin`, `storage`, `config`, `cli`.

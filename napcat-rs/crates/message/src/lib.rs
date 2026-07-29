@@ -159,7 +159,8 @@ pub fn encode_json(message: &Message) -> MessageResult<String> {
 
 /// Helper for JSON decoding.
 pub fn decode_json(text: &str) -> MessageResult<Message> {
-    serde_json::from_str::<Message>(text).map_err(|error| MessageError::Serialization(error.to_string()))
+    serde_json::from_str::<Message>(text)
+        .map_err(|error| MessageError::Serialization(error.to_string()))
 }
 
 /// Echo handler for internal tests and loopback channels.

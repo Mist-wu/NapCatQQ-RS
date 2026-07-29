@@ -1,0 +1,22 @@
+[package]
+name = "napcat-tests"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+tokio.workspace = true
+async-trait = "0.1"
+
+napcat-core = { path = "../crates/core" }
+napcat-message = { path = "../crates/message" }
+napcat-protocol = { path = "../crates/protocol" }
+napcat-api = { path = "../crates/api" }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[[bench]]
+name = "runtime_pipeline"
+path = "benches/runtime_bench.rs"
+harness = false

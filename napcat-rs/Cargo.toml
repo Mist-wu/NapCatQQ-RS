@@ -8,6 +8,7 @@ members = [
   "crates/storage",
   "crates/config",
   "crates/cli",
+  "tests",
 ]
 resolver = "2"
 

@@ -70,7 +70,7 @@ pub struct LoginInfoData {
 }
 
 /// Group information.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct GroupInfo {
     /// Group id.
     pub group_id: String,
@@ -79,7 +79,7 @@ pub struct GroupInfo {
 }
 
 /// User information.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct UserInfo {
     /// User id.
     pub user_id: String,
@@ -231,6 +231,15 @@ impl ApiState {
     pub async fn set_users(&self, users: Vec<UserInfo>) {
         let mut current = self.runtime_users.write().await;
         *current = users;
+    }
+    /// Read cached group cache.
+    pub async fn groups(&self) -> Vec<GroupInfo> {
+        self.runtime_groups.read().await.clone()
+    }
+
+    /// Read cached user cache.
+    pub async fn users(&self) -> Vec<UserInfo> {
+        self.runtime_users.read().await.clone()
     }
 
     /// Build shared router.
