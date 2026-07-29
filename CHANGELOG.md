@@ -32,3 +32,8 @@
   - channel helpers and message helper predicates,
   - `MessageHandler` async trait and reusable JSON encode/decode helpers,
   - dispatcher helper and unit tests.
+
+## [stage-3 protocol] 2026-07-29
+- Introduced `ProtocolBackend` trait in `napcat-protocol` to decouple business logic from protocol implementation.
+- Added protocol capabilities, event enum, mock backend, and event ↔ handler forwarding helper.
+- Added JSON serialization utilities and protocol tests for capability, connect/login state, and message forwarding.
