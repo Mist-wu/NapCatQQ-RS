@@ -5,6 +5,8 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+serde.workspace = true
+thiserror = "2.0"
+async-trait = "0.1"
 tokio.workspace = true
 tracing.workspace = true
-serde.workspace = true

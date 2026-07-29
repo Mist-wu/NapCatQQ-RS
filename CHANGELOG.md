@@ -11,3 +11,10 @@
 
 ## [stage-1] 2026-07-29
 - Add `docs/original-analysis.md` summarizing upstream repo structure and migration mapping.
+
+## [stage-3] 2026-07-29
+- Implemented core runtime in `napcat-core` with:
+  - runtime lifecycle state machine (`Initialized/Running/Stopping/Stopped`),
+  - broadcast shutdown channel orchestration,
+  - service registration, async task registration, and graceful shutdown timeout logic,
+  - runtime-level unit tests for invalid state guard and shutdown behavior.
