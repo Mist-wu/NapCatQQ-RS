@@ -54,7 +54,8 @@ fn runtime_scale(c: &mut Criterion) {
 
                 for i in 0..8 {
                     let service_name = format!("svc-{i}");
-                    service_runtime.register_service(NamedFastService { service_name })
+                    service_runtime
+                        .register_service(NamedFastService { service_name })
                         .await
                         .expect("register service");
                 }
