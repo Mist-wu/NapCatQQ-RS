@@ -14,6 +14,9 @@ use axum::{
 };
 use napcat_event::{EventBus, EventEnvelope};
 use napcat_message::{Message as NapMessage, MessageRecipient};
+use napcat_plugin::{
+    PluginBackendKind, PluginDefinition, PluginEvent, PluginManager, PluginMetadata,
+};
 use napcat_protocol::{
     ProtocolBackend, ProtocolError, ProtocolEvent, ProtocolResult, serialize_event,
 };
@@ -35,6 +38,7 @@ type SharedUsers = Arc<Vec<UserInfo>>;
 pub struct ApiState {
     events: EventBus<ProtocolEvent>,
     protocol_events: broadcast::Sender<ProtocolEvent>,
+    plugin_manager: Arc<PluginManager>,
     dispatch_tx: mpsc::Sender<ProtocolEvent>,
     protocol: Option<Arc<dyn ProtocolBackend>>,
     runtime_running: Arc<RwLock<bool>>,
@@ -112,6 +116,44 @@ pub struct DeleteMsgRequest {
 pub struct DeleteMsgResponse {
     /// Deleted message id.
     pub message_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PluginLoadRequest {
+    /// Full plugin definition.
+    pub definition: PluginDefinition,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PluginLoadResult {
+    /// Loaded plugin name.
+    pub name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PluginUnloadRequest {
+    /// Plugin unique name.
+    pub name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PluginListResponse {
+    /// Loaded plugin names.
+    pub plugins: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PluginKindItem {
+    /// Plugin unique name.
+    pub name: String,
+    /// Runtime backend kind.
+    pub kind: PluginBackendKind,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PluginKindsResponse {
+    /// Loaded plugin runtime kinds.
+    pub kinds: Vec<PluginKindItem>,
 }
 
 /// Group info request payload.
@@ -258,6 +300,7 @@ impl ApiState {
         let events = EventBus::new(EVENT_BROADCAST_CAPACITY);
         let (protocol_events, mut protocol_rx) = broadcast::channel(EVENT_BROADCAST_CAPACITY);
         let (dispatch_tx, mut dispatch_rx) = mpsc::channel(EVENT_DISPATCH_CAPACITY);
+        let plugin_manager = Arc::new(PluginManager::new());
         let broadcaster = events.clone();
         tokio::spawn(async move {
             while let Some(event) = dispatch_rx.recv().await {
@@ -265,8 +308,19 @@ impl ApiState {
             }
         });
         let protocol_relay = events.clone();
+        let plugin_manager_for_events = plugin_manager.clone();
         tokio::spawn(async move {
             while let Ok(event) = protocol_rx.recv().await {
+                if let ProtocolEvent::MessageReceived { message, .. } = &event {
+                    let plugin_event = PluginEvent::Message {
+                        payload: serde_json::to_value(message)
+                            .unwrap_or_else(|_| serde_json::json!({})),
+                        source: Some(String::from("protocol")),
+                    };
+                    let _ = plugin_manager_for_events
+                        .dispatch(plugin_event)
+                        .await;
+                }
                 let _ = protocol_relay.publish(EventEnvelope::new("protocol", "event", event));
             }
         });
@@ -274,6 +328,7 @@ impl ApiState {
         Self {
             events,
             protocol_events,
+            plugin_manager,
             dispatch_tx,
             protocol,
             runtime_running: Arc::new(RwLock::new(false)),
@@ -331,6 +386,10 @@ impl ApiState {
             .route("/message/listen", get(listen_messages))
             .route("/groups", get(list_groups))
             .route("/users", get(list_users))
+            .route("/plugin/load", post(plugin_load))
+            .route("/plugin/unload", post(plugin_unload))
+            .route("/plugin/list", get(plugin_list))
+            .route("/plugin/kinds", get(plugin_kinds))
             .route("/ws", get(ws_upgrade))
             .with_state(self)
     }
@@ -356,6 +415,10 @@ impl ApiState {
     /// Broadcast sender for protocol event stream.
     fn protocol_event_sender(&self) -> broadcast::Sender<ProtocolEvent> {
         self.protocol_events.clone()
+    }
+
+    fn plugin_manager(&self) -> Arc<PluginManager> {
+        self.plugin_manager.clone()
     }
 }
 
@@ -624,6 +687,69 @@ async fn get_friend_list(
         status: String::from("ok"),
         retcode: 0,
         data: payload,
+        message: None,
+    }))
+}
+
+async fn plugin_load(
+    State(state): State<ApiState>,
+    Json(payload): Json<PluginLoadRequest>,
+) -> ApiResult<Json<ApiEnvelope<PluginLoadResult>>> {
+    let name = state
+        .plugin_manager()
+        .load(payload.definition)
+        .await
+        .map_err(|error| ApiError::ProtocolSend(error.to_string()))?;
+
+    Ok(Json(ApiEnvelope {
+        status: String::from("ok"),
+        retcode: 0,
+        data: PluginLoadResult { name },
+        message: None,
+    }))
+}
+
+async fn plugin_unload(
+    State(state): State<ApiState>,
+    Json(payload): Json<PluginUnloadRequest>,
+) -> ApiResult<Json<ApiEnvelope<EmptyData>>> {
+    state
+        .plugin_manager()
+        .unload(&payload.name)
+        .await
+        .map_err(|error| ApiError::ProtocolSend(error.to_string()))?;
+
+    Ok(Json(ApiEnvelope {
+        status: String::from("ok"),
+        retcode: 0,
+        data: EmptyData,
+        message: None,
+    }))
+}
+
+async fn plugin_list(State(state): State<ApiState>) -> ApiResult<Json<ApiEnvelope<PluginListResponse>>> {
+    let plugins = state.plugin_manager().list().await;
+    Ok(Json(ApiEnvelope {
+        status: String::from("ok"),
+        retcode: 0,
+        data: PluginListResponse { plugins },
+        message: None,
+    }))
+}
+
+async fn plugin_kinds(State(state): State<ApiState>) -> ApiResult<Json<ApiEnvelope<PluginKindsResponse>>> {
+    let kinds = state
+        .plugin_manager()
+        .kinds()
+        .await
+        .into_iter()
+        .map(|(name, kind)| PluginKindItem { name, kind })
+        .collect();
+
+    Ok(Json(ApiEnvelope {
+        status: String::from("ok"),
+        retcode: 0,
+        data: PluginKindsResponse { kinds },
         message: None,
     }))
 }
@@ -922,6 +1048,69 @@ mod tests {
             .expect("request should pass");
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn api_plugin_load_list_and_unload_works() {
+        use std::path::PathBuf;
+        let state = ApiState::new();
+        let app = state.clone().router();
+        let load_request = PluginLoadRequest {
+            definition: PluginDefinition {
+                metadata: PluginMetadata::new("test-plugin", "0.1.0"),
+                source: napcat_plugin::PluginSource::Rust {
+                    executable: PathBuf::from("/bin/sh"),
+                    args: vec![String::from("-c"), String::from("cat >/dev/null")],
+                    timeout_ms: 200,
+                },
+                enabled: true,
+            },
+        };
+        let load_payload = serde_json::to_string(&load_request).expect("payload serialize");
+
+        let load_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/plugin/load")
+                    .header("content-type", "application/json")
+                    .body(Body::from(load_payload))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("load request should pass");
+        assert_eq!(load_response.status(), StatusCode::OK);
+
+        let list_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/plugin/list")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("list request should pass");
+        assert_eq!(list_response.status(), StatusCode::OK);
+
+        let unload_payload = serde_json::to_string(&PluginUnloadRequest {
+            name: String::from("test-plugin"),
+        })
+        .expect("payload serialize");
+        let unload_response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/plugin/unload")
+                    .header("content-type", "application/json")
+                    .body(Body::from(unload_payload))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("unload request should pass");
+        assert_eq!(unload_response.status(), StatusCode::OK);
     }
 
     #[tokio::test]
