@@ -99,6 +99,43 @@ pub struct UserInfo {
     pub nickname: String,
 }
 
+/// Delete message request payload.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeleteMsgRequest {
+    /// Message id to delete.
+    pub message_id: String,
+}
+
+/// Delete message response payload.
+#[derive(Debug, Serialize)]
+pub struct DeleteMsgResponse {
+    /// Deleted message id.
+    pub message_id: String,
+}
+
+/// Group info request payload.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GetGroupInfoRequest {
+    /// Target group id.
+    pub group_id: String,
+    /// Whether to ignore cached group info.
+    #[serde(default)]
+    pub no_cache: bool,
+}
+
+/// Group info response payload.
+#[derive(Debug, Serialize)]
+pub struct GroupInfoResponse {
+    /// Group id.
+    pub group_id: String,
+    /// Group display name.
+    pub group_name: String,
+    /// Estimated member count.
+    pub member_count: usize,
+    /// Capacity value for compatibility with OneBot-like response shape.
+    pub max_member_count: usize,
+}
+
 /// Generic message send request.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SendRequest {
@@ -283,6 +320,9 @@ impl ApiState {
             .route("/send_msg", post(send_msg_compat))
             .route("/send_private_msg", post(send_private_msg))
             .route("/send_group_msg", post(send_group_msg))
+            .route("/delete_msg", post(delete_msg))
+            .route("/get_group_info", post(get_group_info))
+            .route("/get_friend_list", get(get_friend_list))
             .route("/message/listen", get(listen_messages))
             .route("/groups", get(list_groups))
             .route("/users", get(list_users))
@@ -485,6 +525,95 @@ async fn send_group_msg(
     };
     let message = request.into_napcat_message()?;
     push_send_event(&state, message).await
+}
+
+async fn delete_msg(
+    State(state): State<ApiState>,
+    Json(payload): Json<DeleteMsgRequest>,
+) -> ApiResult<Json<ApiEnvelope<DeleteMsgResponse>>> {
+    if payload.message_id.trim().is_empty() {
+        return Err(ApiError::InvalidRequest(String::from(
+            "message_id is required",
+        )));
+    }
+
+    state
+        .emit_event(ProtocolEvent::Warning {
+            message: format!("delete message requested: {}", payload.message_id),
+        })
+        .await?;
+
+    Ok(Json(ApiEnvelope {
+        status: String::from("ok"),
+        retcode: 0,
+        data: DeleteMsgResponse {
+            message_id: payload.message_id,
+        },
+        message: None,
+    }))
+}
+
+async fn get_group_info(
+    State(state): State<ApiState>,
+    Json(payload): Json<GetGroupInfoRequest>,
+) -> ApiResult<Json<ApiEnvelope<GroupInfoResponse>>> {
+    let requested_group_id = payload.group_id.trim().to_string();
+    if requested_group_id.is_empty() {
+        return Err(ApiError::InvalidRequest(String::from(
+            "group_id is required",
+        )));
+    }
+
+    let runtime_groups = state.groups().await;
+    let fallback_groups = if payload.no_cache {
+        None
+    } else {
+        Some(compatibility_default_groups())
+    };
+    let candidate = runtime_groups
+        .iter()
+        .find(|group| group.group_id == requested_group_id)
+        .or_else(|| {
+            fallback_groups
+                .as_ref()
+                .and_then(|fallback| fallback.iter().find(|group| group.group_id == requested_group_id))
+        });
+
+    if let Some(group) = candidate {
+        return Ok(Json(ApiEnvelope {
+            status: String::from("ok"),
+            retcode: 0,
+            data: GroupInfoResponse {
+                group_id: group.group_id.clone(),
+                group_name: group.group_name.clone(),
+                member_count: 0,
+                max_member_count: 200,
+            },
+            message: None,
+        }));
+    }
+
+    Err(ApiError::InvalidRequest(format!(
+        "group not found: {requested_group_id}"
+    )))
+}
+
+async fn get_friend_list(
+    State(state): State<ApiState>,
+) -> ApiResult<Json<ApiEnvelope<Vec<UserInfo>>>> {
+    let friends = state.users().await;
+    let payload = if friends.is_empty() {
+        compatibility_default_users()
+    } else {
+        friends
+    };
+
+    Ok(Json(ApiEnvelope {
+        status: String::from("ok"),
+        retcode: 0,
+        data: payload,
+        message: None,
+    }))
 }
 
 async fn listen_messages(

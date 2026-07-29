@@ -109,3 +109,99 @@ async fn api_compat_request_roundtrip_to_message_payload() {
     assert_eq!(payload.sender_id, "api");
     assert_eq!(payload.id, "msg");
 }
+
+#[tokio::test]
+async fn api_delete_message_route_removes_message_by_id() {
+    let state = ApiState::new();
+    let app = state.router();
+    let payload = serde_json::to_string(&napcat_api::DeleteMsgRequest {
+        message_id: String::from("msg-123"),
+    })
+    .expect("payload serialize");
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/delete_msg")
+                .header("content-type", "application/json")
+                .body(Body::from(payload))
+                .expect("valid request"),
+        )
+        .await
+        .expect("request should pass");
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn api_get_group_info_route_works_with_known_group() {
+    let state = ApiState::new();
+    state
+        .set_groups(vec![napcat_api::GroupInfo {
+            group_id: String::from("g1"),
+            group_name: String::from("dev"),
+        }])
+        .await;
+    let app = state.router();
+    let payload = serde_json::to_string(&napcat_api::GetGroupInfoRequest {
+        group_id: String::from("g1"),
+        no_cache: true,
+    })
+    .expect("payload serialize");
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/get_group_info")
+                .header("content-type", "application/json")
+                .body(Body::from(payload))
+                .expect("valid request"),
+        )
+        .await
+        .expect("request should pass");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), 1024)
+        .await
+        .expect("response body");
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&body).expect("get_group_info payload");
+    assert_eq!(envelope["data"]["group_id"].as_str(), Some("g1"));
+}
+
+#[tokio::test]
+async fn api_get_friend_list_route_exposes_friends() {
+    let state = ApiState::new();
+    state
+        .set_users(vec![napcat_api::UserInfo {
+            user_id: String::from("u1"),
+            nickname: String::from("alice"),
+        }])
+        .await;
+    let app = state.router();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/get_friend_list")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("request should pass");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), 1024)
+        .await
+        .expect("response body");
+    let envelope: serde_json::Value = serde_json::from_slice(&body).expect("friend list payload");
+    assert_eq!(envelope["data"][0]["user_id"].as_str(), Some("u1"));
+}
