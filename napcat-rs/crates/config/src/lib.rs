@@ -118,10 +118,7 @@ impl Default for AppConfig {
 }
 
 fn env_var_optional(name: &str) -> Option<String> {
-    match env::var(name) {
-        Ok(value) => Some(value),
-        Err(_) => None,
-    }
+    env::var(name).ok()
 }
 
 /// Configuration related errors.
