@@ -16,7 +16,7 @@ use napcat_message::{Message as NapMessage, MessageRecipient};
 use napcat_protocol::{ProtocolError, ProtocolEvent, ProtocolResult, serialize_event};
 use serde::{Deserialize, Serialize};
 use tokio::{
-    sync::{broadcast, mpsc, RwLock},
+    sync::{RwLock, broadcast, mpsc},
     time::timeout,
 };
 
