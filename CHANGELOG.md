@@ -25,3 +25,10 @@
   - optional file config from `NAPCAT_CONFIG_PATH`,
   - environment overrides (`NAPCAT_HOST`, `NAPCAT_PORT`, `NAPCAT_LOG_LEVEL`, `NAPCAT_DATABASE_URL`),
   - overlay merge + unit tests.
+
+## [stage-3 message] 2026-07-29
+- Implemented unified message model in `napcat-message`:
+  - support private/group recipients and elements (`Text`, `Image`, `File`, `At`, `Reply`, `Json`),
+  - channel helpers and message helper predicates,
+  - `MessageHandler` async trait and reusable JSON encode/decode helpers,
+  - dispatcher helper and unit tests.
