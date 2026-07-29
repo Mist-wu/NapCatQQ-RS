@@ -581,9 +581,14 @@ impl CompatSendRequest {
 
 /// Start API server with in-memory state.
 pub async fn run(addr: &str) -> ProtocolResult<()> {
-    let state = ApiState::new();
+    run_with_state(addr, ApiState::new()).await
+}
 
-    let app = state.router();
+/// Start API server with a pre-created state.
+pub async fn run_with_state(addr: &str, state: ApiState) -> ProtocolResult<()> {
+    state.set_runtime_running(true).await;
+
+    let app = state.clone().router();
     let socket_addr = addr
         .parse::<SocketAddr>()
         .map_err(|err| ProtocolError::Transport(err.to_string()))?;
@@ -592,22 +597,23 @@ pub async fn run(addr: &str) -> ProtocolResult<()> {
         .await
         .map_err(|err| ProtocolError::Transport(err.to_string()))?;
 
-    axum::serve(listener, app)
+    let serve_result = axum::serve(listener, app)
         .await
-        .map_err(|err| ProtocolError::Transport(err.to_string()))
+        .map_err(|err| ProtocolError::Transport(err.to_string()));
+    state.set_runtime_running(false).await;
+    serve_result
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
+    use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use tower::ServiceExt;
 
     #[tokio::test]
     async fn api_status_route_returns_default_state() {
         let state = ApiState::new();
-        let app = state.router();
+        let app = state.clone().router();
 
         let response = app
             .oneshot(
@@ -624,9 +630,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_status_route_reports_runtime_running_state() {
+        let state = ApiState::new();
+        state.set_runtime_running(true).await;
+        let app = state.clone().router();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/login/status")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("request should pass");
+
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 1024)
+            .await
+            .expect("login status body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("login status payload");
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(envelope["data"]["online"].as_bool(), Some(true));
+        assert_eq!(
+            envelope["data"]["message"].as_str(),
+            Some("runtime running")
+        );
+    }
+
+    #[tokio::test]
     async fn api_send_route_emits_event() {
         let state = ApiState::new();
-        let app = state.router();
+        let app = state.clone().router();
         let req_message = SendRequest {
             message: NapMessage::text(
                 "m",
@@ -658,7 +696,7 @@ mod tests {
     #[tokio::test]
     async fn api_send_private_compat_works() {
         let state = ApiState::new();
-        let app = state.router();
+        let app = state.clone().router();
         let payload = serde_json::to_string(&SendPrivateRequest {
             user_id: "u1".to_string(),
             message: "hello".to_string(),
@@ -684,7 +722,7 @@ mod tests {
     #[tokio::test]
     async fn api_group_and_user_route_works() {
         let state = ApiState::new();
-        let app = state.router();
+        let app = state.clone().router();
 
         let groups = app
             .clone()

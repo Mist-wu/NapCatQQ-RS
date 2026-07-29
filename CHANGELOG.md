@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- feat(api): expose runtime running state during run lifetime and add login status runtime online test.
 
 - Initial Rust rewrite scaffold created for `napcat-rs` workspace.
 - Implement HTTP and WebSocket API module with login/message/group/user endpoints and runtime event stream, plus `SendRequest` serialization and endpoint tests.
