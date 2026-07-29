@@ -3,8 +3,16 @@ name = "napcat-storage"
 version = "0.1.0"
 edition.workspace = true
 publish = false
+authors = ["NapCatQQ-RS"]
 
 [dependencies]
+async-trait = "0.1"
 sqlx.workspace = true
+serde_json.workspace = true
 serde.workspace = true
 tracing.workspace = true
+thiserror = "1.0"
+tokio = { workspace = true, features = ["fs"] }
+
+[dev-dependencies]
+tempfile = "3.15"

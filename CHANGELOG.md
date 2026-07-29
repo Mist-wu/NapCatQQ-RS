@@ -21,6 +21,10 @@
   - `register_and_shutdown_runtime`: `9.5319 µs ~ 9.7830 µs`
   - `register_and_shutdown_runtime_with_8_services`: `31.236 µs ~ 31.955 µs`
 - feat(cli): make `napcat-cli` executable with config/env overrides for host and port and debug log-level switch.
+- feat(storage): add `napcat-storage` backends with memory and sqlite implementations
+  - add `Storage` abstraction with async API and typed record model.
+  - add input validation, namespace isolation, metadata timestamps, and clear/list/count operations.
+  - add sqlite table initialization, atomic upsert, and deterministic test coverage for both backends.
 
 ## [stage-2] 2026-07-29
 - Initialize workspace `napcat-rs` with crates: `core`, `protocol`, `message`, `api`, `plugin`, `storage`, `config`, `cli`.

@@ -19,3 +19,8 @@
   - Add workflow for `cargo fmt`, `cargo clippy`, and full test suite on push / pull request.
 - fix(clippy): make config tests compile clean under stricter clippy warnings
   - Fix redundant struct field names and restore required unsafe blocks for env var mutation in tests.
+- feat(storage): implement `napcat-storage` memory and sqlite backends
+  - Add `Storage` abstraction with common async operations (`put`, `get`, `remove`, `keys`, `clear_namespace`, `count_namespace`).
+  - Add in-memory and SQLite implementations with namespace/key validation and row metadata.
+  - Add SQLite schema bootstrap + upsert/query/delete/list flows.
+  - Add storage unit tests for both backends, including namespace isolation and invalid input validation.
