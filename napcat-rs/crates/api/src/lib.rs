@@ -762,6 +762,7 @@ pub async fn run_with_protocol(
 /// Start API server with a pre-created state.
 pub async fn run_with_state(addr: &str, state: ApiState) -> ProtocolResult<()> {
     state.set_runtime_running(true).await;
+    let protocol = state.protocol.clone();
     let socket_addr = match addr.parse::<SocketAddr>() {
         Ok(socket_addr) => socket_addr,
         Err(err) => {
@@ -770,7 +771,7 @@ pub async fn run_with_state(addr: &str, state: ApiState) -> ProtocolResult<()> {
         }
     };
 
-    if let Some(protocol) = state.protocol.clone() {
+    if let Some(protocol) = protocol.clone() {
         if let Err(error) = protocol
             .listen(state.protocol_event_sender())
             .await
@@ -788,6 +789,9 @@ pub async fn run_with_state(addr: &str, state: ApiState) -> ProtocolResult<()> {
         Ok(listener) => listener,
         Err(err) => {
             state.set_runtime_running(false).await;
+            if let Some(protocol) = protocol {
+                let _ = protocol.disconnect().await;
+            }
             return Err(ProtocolError::Transport(err.to_string()));
         }
     };
@@ -796,7 +800,14 @@ pub async fn run_with_state(addr: &str, state: ApiState) -> ProtocolResult<()> {
         .await
         .map_err(|err| ProtocolError::Transport(err.to_string()));
     state.set_runtime_running(false).await;
-    serve_result
+    if let Err(error) = serve_result {
+        if let Some(protocol) = protocol {
+            let _ = protocol.disconnect().await;
+        }
+        Err(error)
+    } else {
+        Ok(())
+    }
 }
 #[cfg(test)]
 mod tests {
