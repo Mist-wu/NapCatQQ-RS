@@ -312,10 +312,10 @@ impl OneBotHttpBackend {
 
     fn map_status_payload(raw: Value) -> ProtocolResult<bool> {
         let data = raw.get("data").or(Some(&raw));
-        if let Some(data_obj) = data {
-            if let Some(online) = data_obj.get("online").and_then(Value::as_bool) {
-                return Ok(online);
-            }
+        if let Some(data_obj) = data
+            && let Some(online) = data_obj.get("online").and_then(Value::as_bool)
+        {
+            return Ok(online);
         }
         Ok(false)
     }

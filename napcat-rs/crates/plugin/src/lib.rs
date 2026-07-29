@@ -17,6 +17,27 @@ use tokio::{io::AsyncWriteExt, process::Command, sync::RwLock, time::timeout};
 /// Convenience plugin result type.
 pub type PluginResult<T> = std::result::Result<T, PluginError>;
 
+
+/// Host-supplied context passed to plugin initialization.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PluginContext {
+    /// Optional service identifier for multi-service hosts.
+    pub service_id: Option<String>,
+}
+
+/// Standardized plugin lifecycle interface.
+#[async_trait]
+pub trait Plugin: Send + Sync {
+    /// Initialize resources and state for plugin execution.
+    async fn initialize(&self, context: PluginContext) -> PluginResult<()>;
+
+    /// Handle one normalized event.
+    async fn on_event(&self, event: PluginEvent) -> PluginResult<Option<PluginAction>>;
+
+    /// Gracefully release plugin state before shutdown.
+    async fn shutdown(&self) -> PluginResult<()>;
+}
+
 /// Supported plugin execution backends.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -339,6 +360,24 @@ impl PluginBackendRuntime for PluginBackend {
             PluginBackend::Wasm(plugin) => plugin.kind(),
             PluginBackend::Http(plugin) => plugin.kind(),
         }
+    }
+}
+
+#[async_trait]
+impl<T> Plugin for T
+where
+    T: PluginBackendRuntime + ?Sized,
+{
+    async fn initialize(&self, _context: PluginContext) -> PluginResult<()> {
+        self.load().await
+    }
+
+    async fn on_event(&self, event: PluginEvent) -> PluginResult<Option<PluginAction>> {
+        self.dispatch(event).await
+    }
+
+    async fn shutdown(&self) -> PluginResult<()> {
+        self.unload().await
     }
 }
 
@@ -848,5 +887,23 @@ mod tests {
         assert!(matches!(short, Err(PluginError::InvalidSource(_))));
         assert!(ok.is_ok());
         assert!(matches!(too_long, Err(PluginError::InvalidSource(_))));
+    }
+
+    #[tokio::test]
+    async fn plugin_trait_maps_to_backend_lifecycle() -> PluginResult<()> {
+        let backend = PluginBackend::Rust(RustPlugin {
+            metadata: PluginMetadata::new("trait-plugin", "0.1.0"),
+            executable: PathBuf::from("/bin/sh"),
+            args: vec![String::from("-c"), String::from("cat >/dev/null")],
+            timeout: Duration::from_millis(200),
+        });
+
+        backend.initialize(PluginContext::default()).await?;
+
+        let action = backend.on_event(PluginEvent::HealthCheck).await?;
+        assert!(action.is_none());
+
+        backend.shutdown().await?;
+        Ok(())
     }
 }

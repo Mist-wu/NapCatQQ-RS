@@ -15,6 +15,10 @@
   - Restrict plugin HTTP endpoints to `http`/`https` and use URL-join for request path building.
   - Enforce bounded plugin timeout range and add unit tests.
   - Add security findings and mitigations in `docs/security-review.md`.
+- feat(plugin): expose plugin lifecycle trait
+  - Add `Plugin` trait with `initialize`, `on_event`, and `shutdown` methods.
+  - Map trait lifecycle to existing plugin backends via blanket implementation.
+  - Add unit test verifying trait lifecycle passthrough for backend implementations.
 - feat(ci): add GitHub Actions CI pipeline
   - Add workflow for `cargo fmt`, `cargo clippy`, and full test suite on push / pull request.
 - fix(clippy): make config tests compile clean under stricter clippy warnings
