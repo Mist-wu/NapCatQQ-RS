@@ -23,6 +23,10 @@
   - Add `QQClient` trait for connect/login/send_packet/receive_packet/heartbeat.
   - Add `QQClientConfig`, `Packet`, `ConnectionState`, and mock adapter `MockQQClient`.
   - Wire new crate into workspace members.
+- feat(event): add unified protocol event bus crate
+  - Add `napcat-event` generic broadcast event bus with envelope metadata.
+  - Update API state event pipeline to publish protocol events through `EventBus`.
+  - Add protocol transport analysis scaffold in `docs/protocol/transport-analysis.md`.
 - feat(ci): add GitHub Actions CI pipeline
   - Add workflow for `cargo fmt`, `cargo clippy`, and full test suite on push / pull request.
 - fix(clippy): make config tests compile clean under stricter clippy warnings

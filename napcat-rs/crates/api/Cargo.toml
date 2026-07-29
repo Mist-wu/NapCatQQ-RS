@@ -8,6 +8,7 @@ publish = false
 axum = { workspace = true, features = ["ws"] }
 napcat-message = { path = "../message" }
 napcat-protocol = { path = "../protocol" }
+napcat-event = { path = "../event" }
 serde.workspace = true
 serde_json.workspace = true
 serde_urlencoded = "0.7"

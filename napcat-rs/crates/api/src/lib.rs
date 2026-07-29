@@ -2,6 +2,7 @@
 
 use std::{fmt, net::SocketAddr, sync::Arc, time::Duration};
 
+use napcat_event::{EventBus, EventEnvelope};
 use axum::{
     Json, Router,
     extract::{
@@ -18,7 +19,7 @@ use napcat_protocol::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::{
-    sync::{RwLock, broadcast, mpsc},
+    sync::{RwLock, mpsc},
     time::timeout,
 };
 
@@ -32,7 +33,7 @@ type SharedUsers = Arc<Vec<UserInfo>>;
 /// Shared API state for HTTP and WebSocket handlers.
 #[derive(Clone)]
 pub struct ApiState {
-    events: broadcast::Sender<ProtocolEvent>,
+    events: EventBus<ProtocolEvent>,
     dispatch_tx: mpsc::Sender<ProtocolEvent>,
     protocol: Option<Arc<dyn ProtocolBackend>>,
     runtime_running: Arc<RwLock<bool>>,
@@ -216,12 +217,16 @@ impl ApiState {
 
     /// Create a state with optional protocol backend.
     pub fn with_protocol(protocol: Option<Arc<dyn ProtocolBackend>>) -> Self {
-        let (events, _) = broadcast::channel(EVENT_BROADCAST_CAPACITY);
+        let events = EventBus::new(EVENT_BROADCAST_CAPACITY);
         let (dispatch_tx, mut dispatch_rx) = mpsc::channel(EVENT_DISPATCH_CAPACITY);
         let broadcaster = events.clone();
         tokio::spawn(async move {
             while let Some(event) = dispatch_rx.recv().await {
-                let _ = broadcaster.send(event);
+                let _ = broadcaster.publish(EventEnvelope::new(
+                    "api",
+                    "protocol-event",
+                    event,
+                ));
             }
         });
 
@@ -494,7 +499,8 @@ async fn listen_messages(
     for _ in 0..max_events {
         let event_result = timeout(Duration::from_millis(timeout_ms), rx.recv()).await;
         match event_result {
-            Ok(Ok(event)) => {
+            Ok(Ok(envelope)) => {
+                let event = envelope.payload;
                 if let Ok(serialized) = serialize_event(&event) {
                     records.push(serialized);
                 }
@@ -519,8 +525,8 @@ async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<ApiState>) -> impl
 
 async fn ws_handler(mut socket: WebSocket, state: ApiState) {
     let mut rx = state.events.subscribe();
-    while let Ok(event) = rx.recv().await {
-        if let Ok(serialized) = serialize_event(&event)
+    while let Ok(envelope) = rx.recv().await {
+        if let Ok(serialized) = serialize_event(&envelope.payload)
             && socket.send(Message::Text(serialized.into())).await.is_err()
         {
             break;
