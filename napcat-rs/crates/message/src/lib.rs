@@ -195,7 +195,7 @@ pub async fn dispatch(
     handler: &dyn MessageHandler,
     message: &Message,
 ) -> MessageResult<HandleResult> {
-    if !handler.can_handle(&message) {
+    if !handler.can_handle(message) {
         return Err(MessageError::UnsupportedChannel(format!(
             "{:?}",
             message.recipient.channel()
