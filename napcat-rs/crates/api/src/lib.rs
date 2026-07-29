@@ -945,4 +945,13 @@ mod tests {
         assert_eq!(groups.status(), StatusCode::OK);
         assert_eq!(users.status(), StatusCode::OK);
     }
+
+    #[tokio::test]
+    async fn api_run_with_state_invalid_address_resets_runtime() {
+        let state = ApiState::new();
+        let result = run_with_state("invalid:addr", state.clone()).await;
+
+        assert!(result.is_err());
+        assert!(!state.is_runtime_running().await);
+    }
 }
