@@ -491,7 +491,11 @@ impl QQClient for TcpQQClient {
             )));
         }
 
-        let request = build_wire_line("auth.login", format!("{{\"account\":\"{account}\",\"password\":\"{password}\"}"));
+        let request_payload = serde_json::json!({
+            "account": account,
+            "password": password,
+        });
+        let request = build_wire_line("auth.login", request_payload.to_string());
         {
             let mut stream = self.stream.lock().await;
             let stream = stream
@@ -736,5 +740,21 @@ mod tests {
 
         let _ = server.await;
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn tcp_client_rejects_invalid_tcp_endpoint() {
+        let client = TcpQQClient::default();
+        let result = client.connect(QQClientConfig::new("bad-endpoint")).await;
+        assert!(matches!(result, Err(QQClientError::Transport(_))));
+    }
+
+    #[tokio::test]
+    async fn tcp_client_send_requires_login() {
+        let client = TcpQQClient::default();
+        let result = client
+            .send_packet(Packet::new("message.send", r#"{"text":"hi"}"#))
+            .await;
+        assert!(matches!(result, Err(QQClientError::InvalidState(_))));
     }
 }
