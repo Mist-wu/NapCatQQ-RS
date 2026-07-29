@@ -16,6 +16,7 @@
 - test: 记录 `cargo fmt --all -- --check`、`cargo clippy`、`cargo test --workspace --all-targets`、`cargo bench` 的云端执行结果，基准：
   - `register_and_shutdown_runtime`: `9.5319 µs ~ 9.7830 µs`
   - `register_and_shutdown_runtime_with_8_services`: `31.236 µs ~ 31.955 µs`
+- feat(cli): make `napcat-cli` executable with config/env overrides for host and port and debug log-level switch.
 
 ## [stage-2] 2026-07-29
 - Initialize workspace `napcat-rs` with crates: `core`, `protocol`, `message`, `api`, `plugin`, `storage`, `config`, `cli`.

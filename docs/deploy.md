@@ -22,7 +22,7 @@ git submodule update --init --recursive || true
 git checkout main
 ```
 
-## 3. 本地构建与校验
+## 3. 远端验证与校验（推荐在服务器执行）
 
 ```bash
 cd napcat-rs
@@ -32,12 +32,9 @@ cargo test --workspace --all-targets
 cargo bench
 ```
 
-## 4. 本机开发与版本管理
+## 4. 开发与版本管理
 
-用户要求的工作模式为：
-
-- 代码修改、提交与 `git push` 在本机完成。
-- 远端服务器仅承担构建、测试与运行。
+代码、构建、测试与提交建议在远端主机执行。
 
 示例提交流程：
 
@@ -49,16 +46,16 @@ git push origin main
 
 ## 5. 运行服务
 
-当前仓库仅提供 API/协议/插件等运行时组件，未提供完整生产级进程入口（`napcat-cli` 目前为参数占位入口）。可通过 Rust 调用 `napcat_api::run` 或在应用层包装为主服务。
-
-示例：
+CLI 现已提供可直接启动 API 的入口。
 
 ```bash
 cd napcat-rs
 cargo run -p napcat-cli -- --help
+cargo run -p napcat-cli -- --host 127.0.0.1 --port 3000
+cargo run -p napcat-cli -- --host 0.0.0.0 --port 8080 --debug
 ```
 
-如需临时运行 API：
+也可直接调用 API 启动函数：
 
 ```rust
 napcat_api::run("127.0.0.1:3000").await

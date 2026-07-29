@@ -4,6 +4,10 @@ version = "0.1.0"
 edition.workspace = true
 publish = false
 
+authors = ["NapCatQQ-RS"]
+
 [dependencies]
 clap.workspace = true
+tokio.workspace = true
+napcat-api = { path = "../api" }
 napcat-config = { path = "../config" }
