@@ -2,7 +2,7 @@
 
 ## 环境
 
-- 执行时间：2026-07-29T14:30:54Z
+- 执行时间：2026-07-29T14:46:12Z
 - 执行位置：云服务器 `root@152.42.241.53`
 - 项目路径：`/root/projects/NapCatQQ-RS/napcat-rs`
 
@@ -49,10 +49,10 @@ cargo test --workspace --all-targets
 cargo bench
 ```
 
-- `register_and_shutdown_runtime`: `9.854 µs ~ 10.475 µs`
-- `register_and_shutdown_runtime_with_8_services`: `31.252 µs ~ 32.202 µs`
+- `register_and_shutdown_runtime`: `10.348 µs ~ 11.103 µs`
+- `register_and_shutdown_runtime_with_8_services`: `39.325 µs ~ 44.226 µs`
 - 说明：两项基准均正常执行；`Gnuplot` 不存在时自动降级为 `plotters` 后端，未影响执行。
 - 最新一次 run（同环境）：
-  - `register_and_shutdown_runtime`: `15.762 µs ~ 16.040 µs`
-  - `register_and_shutdown_runtime_with_8_services`: `48.119 µs ~ 51.410 µs`
-  - 说明：该次运行显示相对历史有回归（统计差异约 +35%~+48%）；建议在空载与压力环境下复测以确认是否为宿主抖动导致。
+  - `register_and_shutdown_runtime`: `10.348 µs ~ 11.103 µs`
+  - `register_and_shutdown_runtime_with_8_services`: `39.325 µs ~ 44.226 µs`
+  - 说明：该次运行对比历史版本有明显回退风险已缓解（基准总体改善），建议继续保留近期基线用于后续回归检查。

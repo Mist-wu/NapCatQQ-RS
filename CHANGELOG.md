@@ -7,6 +7,7 @@
 - docs: add root docs/performance.md and root docs/security-review.md; refresh docs/test-report.md with latest bench and test counts.
 - feat(api): expose runtime running state during run lifetime and add login status runtime online test.
 - test: update benchmark snapshot to current cloud-server run and record regression note.
+- docs: refresh root test report with improved runtime benchmark snapshot from latest cloud run.
 
 - Initial Rust rewrite scaffold created for `napcat-rs` workspace.
 - Implement HTTP and WebSocket API module with login/message/group/user endpoints and runtime event stream, plus `SendRequest` serialization and endpoint tests.
