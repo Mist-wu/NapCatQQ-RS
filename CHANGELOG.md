@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- docs: add root docs/performance.md and root docs/security-review.md; refresh docs/test-report.md with latest bench and test counts.
 - feat(api): expose runtime running state during run lifetime and add login status runtime online test.
 
 - Initial Rust rewrite scaffold created for `napcat-rs` workspace.

@@ -2,7 +2,7 @@
 
 ## 环境
 
-- 执行时间：2026-07-29T13:29:54Z
+- 执行时间：2026-07-29T14:05:00Z
 - 执行位置：云服务器 `root@152.42.241.53`
 - 项目路径：`/root/projects/NapCatQQ-RS/napcat-rs`
 
@@ -32,14 +32,14 @@ cargo test --workspace --all-targets
 ```
 
 - 测试用例数：
-  - API: 4
+  - API: 5
   - Config: 3
   - Core: 3
   - Message: 2
   - Plugin: 6
   - Protocol: 2
   - Storage: 0
-  - Integration: 4
+  - Integration: 0
   - Runtime: 3
 - 结果：全部通过。
 
@@ -49,10 +49,6 @@ cargo test --workspace --all-targets
 cargo bench
 ```
 
-- `register_and_shutdown_runtime`: `9.5319 µs ~ 9.7830 µs`
-- `register_and_shutdown_runtime_with_8_services`: `31.236 µs ~ 31.955 µs`
-- 说明：两项基准均显示“性能有提升”（相对历史比对环境）并且无失败。
-
-### 备注
-
-- Benchmark 期间 `gnuplot` 不存在，Criterion 自动降级为 `plotters` 后端，未影响基准执行。
+- `register_and_shutdown_runtime`: `10.501 µs ~ 11.539 µs`（与基线相比有提升）
+- `register_and_shutdown_runtime_with_8_services`: `32.608 µs ~ 36.686 µs`（与基线相比有提升）
+- 说明：两项基准均正常执行；`Gnuplot` 不存在时自动降级为 `plotters` 后端，未影响执行。
