@@ -312,12 +312,10 @@ impl RustPlugin {
             ))
         })?;
 
-        if let Some(event_payload) = event {
-            if let Some(mut stdin) = child.stdin.take() {
-                let event_body = serde_json::to_vec(event_payload)
-                    .map_err(|error| PluginError::Serialize(error.to_string()))?;
-                stdin.write_all(&event_body).await?;
-            }
+        if let Some(event_payload) = event && let Some(mut stdin) = child.stdin.take() {
+            let event_body = serde_json::to_vec(event_payload)
+                .map_err(|error| PluginError::Serialize(error.to_string()))?;
+            stdin.write_all(&event_body).await?;
         }
 
         let output = timeout(self.timeout, child.wait_with_output())
