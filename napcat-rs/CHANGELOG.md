@@ -31,6 +31,10 @@
   - Add `napcat-event` generic broadcast event bus with envelope metadata.
   - Update API state event pipeline to publish protocol events through `EventBus`.
   - Add protocol transport analysis scaffold in `docs/protocol/transport-analysis.md`.
+- feat(desktop): add dashboard scaffold crate for status monitoring
+  - Add `crates/desktop` with `DesktopRuntime` and event-driven snapshot updates.
+  - Add start/stop lifecycle and status rendering methods.
+  - Use shared event bus events for future GUI wiring.
 - chore(docs): add original analysis notes and e2e execution plan
   - Add `docs/original-analysis.md` with module mapping and completion差距清单。
   - Add `tests/e2e/README.md` with end-to-end smoke plan and pass criteria。

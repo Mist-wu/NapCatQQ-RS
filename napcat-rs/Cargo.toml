@@ -9,6 +9,7 @@ members = [
   "crates/config",
   "crates/qq-client",
   "crates/event",
+  "crates/desktop",
   "crates/cli",
   "tests",
 ]
