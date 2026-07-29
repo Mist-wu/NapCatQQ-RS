@@ -10,7 +10,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use thiserror::Error;
-use tokio::{fs, sync::RwLock};
+use tokio::sync::RwLock;
 
 /// Storage-wide result type.
 pub type Result<T> = std::result::Result<T, StorageError>;
@@ -364,7 +364,7 @@ impl Storage for SqliteStore {
         .map_err(|error| StorageError::Database(error.to_string()))?;
 
         match row {
-            Some(row) => Ok(Some(SqliteStore::record_to_entry(&row))),
+            Some(row) => Ok(Some(SqliteStore::record_to_entry(&row)?)),
             None => Ok(None),
         }
     }
