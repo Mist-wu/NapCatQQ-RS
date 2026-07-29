@@ -33,12 +33,7 @@ pub trait Storage: Send + Sync {
     async fn initialize(&self) -> Result<()>;
 
     /// Upsert a JSON value under the provided namespace and key.
-    async fn put(
-        &self,
-        namespace: &str,
-        key: &str,
-        value: serde_json::Value,
-    ) -> Result<()>;
+    async fn put(&self, namespace: &str, key: &str, value: serde_json::Value) -> Result<()>;
 
     /// Get stored record.
     async fn get(&self, namespace: &str, key: &str) -> Result<Option<StoredRecord>>;
@@ -181,13 +176,17 @@ impl SqliteStore {
             .map_err(|error| StorageError::Database(error.to_string()))?;
 
         let value = serde_json::from_str(&value_text).map_err(|error| {
-            StorageError::Serde(format!("deserialize stored record for `{namespace}:{key}` failed: {error}"))
+            StorageError::Serde(format!(
+                "deserialize stored record for `{namespace}:{key}` failed: {error}"
+            ))
         })?;
 
-        let created_at = u64::try_from(created_at)
-            .map_err(|error| StorageError::Internal(format!("invalid created_at value: {error}")))?;
-        let updated_at = u64::try_from(updated_at)
-            .map_err(|error| StorageError::Internal(format!("invalid updated_at value: {error}")))?;
+        let created_at = u64::try_from(created_at).map_err(|error| {
+            StorageError::Internal(format!("invalid created_at value: {error}"))
+        })?;
+        let updated_at = u64::try_from(updated_at).map_err(|error| {
+            StorageError::Internal(format!("invalid updated_at value: {error}"))
+        })?;
 
         Ok(StoredRecord {
             namespace,
@@ -210,7 +209,12 @@ impl Storage for MemoryStore {
         let now = unix_seconds_now();
         let mut values = self.values.write().await;
         let current = values.remove(&Self::qualified_key(namespace, key));
-        let record = Self::make_record(namespace, key, value, current.as_ref().map(|value| (value, now)));
+        let record = Self::make_record(
+            namespace,
+            key,
+            value,
+            current.as_ref().map(|value| (value, now)),
+        );
         values.insert(Self::qualified_key(namespace, key), record);
         Ok(())
     }
@@ -366,25 +370,26 @@ impl Storage for SqliteStore {
 
     async fn remove(&self, namespace: &str, key: &str) -> Result<bool> {
         validate_namespace_and_key(namespace, key)?;
-        let result = sqlx::query(
-            "DELETE FROM napcat_storage WHERE namespace = ?1 AND record_key = ?2",
-        )
-        .bind(namespace)
-        .bind(key)
-        .execute(&self.pool)
-        .await
-        .map_err(|error| StorageError::Database(error.to_string()))?;
+        let result =
+            sqlx::query("DELETE FROM napcat_storage WHERE namespace = ?1 AND record_key = ?2")
+                .bind(namespace)
+                .bind(key)
+                .execute(&self.pool)
+                .await
+                .map_err(|error| StorageError::Database(error.to_string()))?;
 
         Ok(result.rows_affected() > 0)
     }
 
     async fn keys(&self, namespace: &str) -> Result<Vec<String>> {
         validate_namespace(namespace)?;
-        let rows = sqlx::query("SELECT record_key FROM napcat_storage WHERE namespace = ?1 ORDER BY record_key ASC")
-            .bind(namespace)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|error| StorageError::Database(error.to_string()))?;
+        let rows = sqlx::query(
+            "SELECT record_key FROM napcat_storage WHERE namespace = ?1 ORDER BY record_key ASC",
+        )
+        .bind(namespace)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
         let mut keys = Vec::with_capacity(rows.len());
         for row in rows {
             let key: String = row
@@ -445,7 +450,9 @@ fn validate_namespace(namespace: &str) -> Result<()> {
 
 fn validate_key(key: &str) -> Result<()> {
     if key.trim().is_empty() {
-        Err(StorageError::Validation(String::from("key cannot be empty")))
+        Err(StorageError::Validation(String::from(
+            "key cannot be empty",
+        )))
     } else {
         Ok(())
     }
@@ -456,11 +463,9 @@ fn storage_url_from_path(path: &Path) -> Result<String> {
         return Ok(String::from("sqlite::memory:"));
     }
 
-    let path_text = path
-        .to_str()
-        .ok_or_else(|| {
-            StorageError::Validation(String::from("database path contains non-utf8 characters"))
-        })?;
+    let path_text = path.to_str().ok_or_else(|| {
+        StorageError::Validation(String::from("database path contains non-utf8 characters"))
+    })?;
     if path.is_absolute() {
         Ok(format!("sqlite:{path_text}?mode=rwc"))
     } else {
@@ -553,7 +558,10 @@ mod tests {
 
     #[tokio::test]
     async fn memory_rejects_invalid_inputs() {
-        let backend = StorageBackend::Memory.connect().await.expect("connect backend");
+        let backend = StorageBackend::Memory
+            .connect()
+            .await
+            .expect("connect backend");
         let err = backend
             .put("", "empty", serde_json::json!({"a":1}))
             .await
