@@ -72,7 +72,9 @@ async fn run_app(args: Args) -> Result<(), String> {
     let protocol = match config.protocol_mode.as_str() {
         "onebot" | "onebot-http" | "onebot_http" => {
             if config.protocol_endpoint.trim().is_empty() {
-                return Err(String::from("protocol endpoint is required for onebot mode"));
+                return Err(String::from(
+                    "protocol endpoint is required for onebot mode",
+                ));
             }
             let mut backend_config = OneBotBackendConfig::new(config.protocol_endpoint.clone())
                 .with_listener_settings(

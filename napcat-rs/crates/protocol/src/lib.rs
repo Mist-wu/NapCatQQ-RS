@@ -16,7 +16,7 @@ use std::{
 };
 use thiserror::Error;
 use tokio::{
-    sync::{broadcast, mpsc, Mutex},
+    sync::{Mutex, broadcast, mpsc},
     task::JoinHandle,
     time::sleep,
 };
@@ -411,7 +411,9 @@ impl ProtocolBackend for OneBotHttpBackend {
         };
 
         if base_url.is_empty() {
-            return Err(ProtocolError::Transport(String::from("empty onebot endpoint")));
+            return Err(ProtocolError::Transport(String::from(
+                "empty onebot endpoint",
+            )));
         }
 
         if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
@@ -447,29 +449,31 @@ impl ProtocolBackend for OneBotHttpBackend {
 
     async fn send_message(&self, message: Message) -> ProtocolResult<()> {
         if !self.connected.load(Ordering::Acquire) {
-            return Err(ProtocolError::Transport(String::from("protocol is not connected")));
+            return Err(ProtocolError::Transport(String::from(
+                "protocol is not connected",
+            )));
         }
 
         let payload = OneBotHttpBackend::message_to_plain_text(&message);
         if payload.trim().is_empty() {
-            return Err(ProtocolError::Transport(String::from("message content is empty")));
+            return Err(ProtocolError::Transport(String::from(
+                "message content is empty",
+            )));
         }
 
         let request = match &message.recipient {
-            MessageRecipient::Private { user_id } => {
-                self.request(reqwest::Method::POST, "/send_private_msg")
-                    .json(&OneBotSendPrivate {
-                        user_id: user_id.clone(),
-                        message: payload,
-                    })
-            }
-            MessageRecipient::Group { group_id } => {
-                self.request(reqwest::Method::POST, "/send_group_msg")
-                    .json(&OneBotSendGroup {
-                        group_id: group_id.clone(),
-                        message: payload,
-                    })
-            }
+            MessageRecipient::Private { user_id } => self
+                .request(reqwest::Method::POST, "/send_private_msg")
+                .json(&OneBotSendPrivate {
+                    user_id: user_id.clone(),
+                    message: payload,
+                }),
+            MessageRecipient::Group { group_id } => self
+                .request(reqwest::Method::POST, "/send_group_msg")
+                .json(&OneBotSendGroup {
+                    group_id: group_id.clone(),
+                    message: payload,
+                }),
         };
 
         let response = request
@@ -489,14 +493,15 @@ impl ProtocolBackend for OneBotHttpBackend {
 
     async fn listen(&self, notify: broadcast::Sender<ProtocolEvent>) -> ProtocolResult<()> {
         if !self.connected.load(Ordering::Acquire) {
-            return Err(ProtocolError::Transport(String::from("protocol is not connected")));
+            return Err(ProtocolError::Transport(String::from(
+                "protocol is not connected",
+            )));
         }
 
-        if self
-            .listening
-            .swap(true, Ordering::AcqRel)
-        {
-            return Err(ProtocolError::Transport(String::from("listen already started")));
+        if self.listening.swap(true, Ordering::AcqRel) {
+            return Err(ProtocolError::Transport(String::from(
+                "listen already started",
+            )));
         }
 
         let backend = self.clone();
@@ -539,7 +544,9 @@ impl ProtocolBackend for OneBotHttpBackend {
                                     };
 
                                     let result = match payload {
-                                        ListenPayload::Text(raw_text) => deserialize_event(&raw_text),
+                                        ListenPayload::Text(raw_text) => {
+                                            deserialize_event(&raw_text)
+                                        }
                                         ListenPayload::Object(raw_obj) => {
                                             serde_json::from_value(raw_obj).map_err(|error| {
                                                 ProtocolError::Serialization(error.to_string())
@@ -670,10 +677,9 @@ mod tests {
         );
         proto.inject(incoming.clone());
 
-        let recv = rx
-            .recv()
-            .await
-            .ok_or_else(|| ProtocolError::Transport(String::from("no message from mock protocol")))?;
+        let recv = rx.recv().await.ok_or_else(|| {
+            ProtocolError::Transport(String::from("no message from mock protocol"))
+        })?;
         let handler = EchoHandler;
         let event = ProtocolEvent::MessageReceived { message: recv };
         let summary = forward_to_handler(&handler, &event)

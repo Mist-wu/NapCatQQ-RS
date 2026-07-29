@@ -619,7 +619,9 @@ pub async fn run_with_state(addr: &str, state: ApiState) -> ProtocolResult<()> {
         protocol
             .listen(state.events.clone())
             .await
-            .map_err(|error| ProtocolError::Transport(format!("protocol listen failed: {error}")))?;
+            .map_err(|error| {
+                ProtocolError::Transport(format!("protocol listen failed: {error}"))
+            })?;
     }
 
     let app = state.clone().router();

@@ -116,21 +116,21 @@ impl AppConfig {
         }
 
         if let Some(timeout_text) = env_var_optional("NAPCAT_PROTOCOL_LISTEN_TIMEOUT_MS") {
-            patch.protocol_listen_timeout_ms = Some(
-                timeout_text.parse::<u64>().map_err(|error| ConfigError::EnvParse {
+            patch.protocol_listen_timeout_ms = Some(timeout_text.parse::<u64>().map_err(
+                |error| ConfigError::EnvParse {
                     key: "NAPCAT_PROTOCOL_LISTEN_TIMEOUT_MS".to_string(),
                     details: error.to_string(),
-                })?,
-            );
+                },
+            )?);
         }
 
         if let Some(max_events_text) = env_var_optional("NAPCAT_PROTOCOL_LISTEN_MAX_EVENTS") {
-            patch.protocol_listen_max_events = Some(
-                max_events_text.parse::<usize>().map_err(|error| ConfigError::EnvParse {
+            patch.protocol_listen_max_events = Some(max_events_text.parse::<usize>().map_err(
+                |error| ConfigError::EnvParse {
                     key: "NAPCAT_PROTOCOL_LISTEN_MAX_EVENTS".to_string(),
                     details: error.to_string(),
-                })?,
-            );
+                },
+            )?);
         }
 
         Ok(patch)
