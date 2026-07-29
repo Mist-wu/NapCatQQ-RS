@@ -23,6 +23,10 @@
   - Add `QQClient` trait for connect/login/send_packet/receive_packet/heartbeat.
   - Add `QQClientConfig`, `Packet`, `ConnectionState`, and mock adapter `MockQQClient`.
   - Wire new crate into workspace members.
+- feat(qq-client): harden mock client state machine and packet lifecycle
+  - Extend `MockQQClient` with stateful endpoint/token/heartbeat metadata and packet queues.
+  - Add outbound packet capture and inbound injection helpers.
+  - Add unit tests for pre-login send rejection, packet round trip, and heartbeat validation.
 - feat(message): add video message element support
   - Extend unified message model with `MessageElement::Video`.
   - Add `is_video_message` helper and JSON round-trip coverage.

@@ -2,7 +2,10 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::{
+    collections::VecDeque,
+    time::{Duration, SystemTime},
+};
 use thiserror::Error;
 
 /// Result alias used by QQ client adapters.
@@ -56,7 +59,7 @@ pub enum ConnectionState {
 }
 
 /// Lightweight packet abstraction for transport layers.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Packet {
     /// Packet route or opcode name.
     pub route: String,
@@ -92,6 +95,10 @@ pub enum QQClientError {
     /// Missing or invalid data.
     #[error("invalid state: {0}")]
     InvalidState(String),
+
+    /// Operation timed out.
+    #[error("operation timed out: {0}")]
+    Timeout(String),
 }
 
 /// QQ client runtime contract.
@@ -114,11 +121,28 @@ pub trait QQClient: Send + Sync {
 }
 
 /// In-memory mock implementation used for protocol tests and offline validation.
-#[derive(Default)]
 pub struct MockQQClient {
     endpoint: tokio::sync::Mutex<Option<String>>,
     token: tokio::sync::Mutex<Option<String>>,
     state: tokio::sync::Mutex<ConnectionState>,
+    heartbeat_at: tokio::sync::Mutex<Option<SystemTime>>,
+    timeout_ms: tokio::sync::Mutex<u64>,
+    sent_packets: tokio::sync::Mutex<VecDeque<Packet>>,
+    inbound_packets: tokio::sync::Mutex<VecDeque<Packet>>,
+}
+
+impl Default for MockQQClient {
+    fn default() -> Self {
+        Self {
+            endpoint: tokio::sync::Mutex::new(None),
+            token: tokio::sync::Mutex::new(None),
+            state: tokio::sync::Mutex::new(ConnectionState::Disconnected),
+            heartbeat_at: tokio::sync::Mutex::new(None),
+            timeout_ms: tokio::sync::Mutex::new(2_000),
+            sent_packets: tokio::sync::Mutex::new(VecDeque::new()),
+            inbound_packets: tokio::sync::Mutex::new(VecDeque::new()),
+        }
+    }
 }
 
 #[async_trait]
@@ -128,15 +152,33 @@ impl QQClient for MockQQClient {
             return Err(QQClientError::Transport(String::from("empty endpoint")));
         }
 
-        let mut endpoint = self.endpoint.lock().await;
-        *endpoint = Some(config.endpoint);
+        {
+            let mut state = self.state.lock().await;
+            if matches!(*state, ConnectionState::LoggedIn) {
+                return Err(QQClientError::InvalidState(String::from(
+                    "already logged in, disconnect first",
+                )));
+            }
+            *state = ConnectionState::Connected;
+        }
 
-        let mut state = self.state.lock().await;
-        *state = ConnectionState::Connected;
+        *self.endpoint.lock().await = Some(config.endpoint);
+        *self.timeout_ms.lock().await = config.timeout_ms;
         Ok(())
     }
 
     async fn login(&self, account: &str, password: &str) -> QQClientResult<String> {
+        let connected = {
+            let state = self.state.lock().await;
+            matches!(*state, ConnectionState::Connected)
+        };
+
+        if !connected {
+            return Err(QQClientError::InvalidState(String::from(
+                "must connect before login",
+            )));
+        }
+
         if account.trim().is_empty() || password.trim().is_empty() {
             return Err(QQClientError::Login(String::from("account and password required")));
         }
@@ -149,16 +191,92 @@ impl QQClient for MockQQClient {
         Ok(format!("{account}:logged-in"))
     }
 
-    async fn send_packet(&self, _packet: Packet) -> QQClientResult<()> {
+    async fn send_packet(&self, packet: Packet) -> QQClientResult<()> {
+        if !self.is_logged_in().await? {
+            return Err(QQClientError::InvalidState(String::from(
+                "must login before sending packets",
+            )));
+        }
+
+        let mut packets = self.sent_packets.lock().await;
+        packets.push_back(packet);
         Ok(())
     }
 
     async fn receive_packet(&self) -> QQClientResult<Option<Packet>> {
-        Ok(None)
+        let mut packets = self.inbound_packets.lock().await;
+        Ok(packets.pop_front())
     }
 
-    async fn heartbeat(&self, _interval: Duration) -> QQClientResult<()> {
+    async fn heartbeat(&self, interval: Duration) -> QQClientResult<()> {
+        if !self.is_logged_in().await? {
+            return Err(QQClientError::InvalidState(String::from(
+                "must login before heartbeat",
+            )));
+        }
+        if interval.is_zero() {
+            return Err(QQClientError::Timeout(String::from("heartbeat interval is zero")));
+        }
+
+        let interval_ms = u64::try_from(interval.as_millis())
+            .map_err(|error| QQClientError::Timeout(format!("heartbeat interval too long: {error}")))?;
+
+        *self.heartbeat_at.lock().await = Some(SystemTime::now());
+        *self.timeout_ms.lock().await = interval_ms;
         Ok(())
+    }
+}
+
+impl MockQQClient {
+    /// Inject a packet that should be returned by the next `receive_packet` call.
+    pub async fn inject_packet(&self, packet: Packet) {
+        let mut inbound = self.inbound_packets.lock().await;
+        inbound.push_back(packet);
+    }
+
+    /// Return all packets sent through `send_packet`.
+    pub async fn sent_packets(&self) -> Vec<Packet> {
+        let sent = self.sent_packets.lock().await;
+        sent.iter().cloned().collect()
+    }
+
+    /// Return connection state observed by operations.
+    pub async fn state(&self) -> ConnectionState {
+        self.state.lock().await.clone()
+    }
+
+    async fn is_logged_in(&self) -> QQClientResult<bool> {
+        let timeout_ms = *self.timeout_ms.lock().await;
+        if timeout_ms == 0 {
+            return Err(QQClientError::Timeout(String::from("configured timeout is zero")));
+        }
+
+        Ok(matches!(
+            *self.state.lock().await,
+            ConnectionState::LoggedIn
+        ))
+    }
+
+    /// Disconnect and release all runtime state, keeping telemetry values.
+    pub async fn disconnect(&self) -> QQClientResult<()> {
+        let mut state = self.state.lock().await;
+        *state = ConnectionState::Disconnected;
+        Ok(())
+    }
+
+    /// Whether heartbeat has been triggered at least once.
+    pub async fn has_heartbeat(&self) -> bool {
+        self.heartbeat_at.lock().await.is_some()
+    }
+
+    /// Return current endpoint if connected.
+    pub async fn endpoint(&self) -> Option<String> {
+        self.endpoint.lock().await.clone()
+    }
+
+    /// Return current token if available.
+    pub async fn token(&self) -> Option<String> {
+        self.token.lock().await.clone()
     }
 }
 
@@ -170,13 +288,13 @@ mod tests {
     #[tokio::test]
     async fn mock_client_connect_and_login_updates_state() -> QQClientResult<()> {
         let client = MockQQClient::default();
-        client
-            .connect(QQClientConfig::new("mock://localhost"))
-            .await?;
+        client.connect(QQClientConfig::new("mock://localhost")).await?;
         let ticket = client.login("alice", "secret").await?;
         assert_eq!(ticket, "alice:logged-in");
 
         client.heartbeat(Duration::from_millis(10)).await?;
+        assert!(client.has_heartbeat().await);
+        assert_eq!(client.state().await, ConnectionState::LoggedIn);
         assert!(client.receive_packet().await?.is_none());
         Ok(())
     }
@@ -184,12 +302,53 @@ mod tests {
     #[tokio::test]
     async fn mock_client_rejects_empty_login_payload() {
         let client = MockQQClient::default();
-        client
-            .connect(QQClientConfig::new("mock://localhost"))
-            .await
-            .unwrap();
+        let connected = client.connect(QQClientConfig::new("mock://localhost")).await;
+        assert!(connected.is_ok());
 
         let result = client.login("", "").await;
         assert!(matches!(result, Err(QQClientError::Login(_))));
+    }
+
+    #[tokio::test]
+    async fn mock_client_send_and_receive_packets() -> QQClientResult<()> {
+        let client = MockQQClient::default();
+        client.connect(QQClientConfig::new("mock://localhost")).await?;
+        client.login("alice", "secret").await?;
+
+        let packet = Packet::new("message.send", "{\"text\":\"hi\"}");
+        client.send_packet(packet.clone()).await?;
+        client.inject_packet(packet.clone()).await;
+
+        let sent = client.sent_packets().await;
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0], packet);
+
+        let received = client
+            .receive_packet()
+            .await?
+            .expect("received packet should exist");
+        assert_eq!(received.route, "message.send");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mock_client_rejects_send_when_logged_out() {
+        let client = MockQQClient::default();
+        let connected = client.connect(QQClientConfig::new("mock://localhost")).await;
+        assert!(connected.is_ok());
+        let packet = Packet::new("message.send", "{\"text\":\"hi\"}");
+
+        let result = client.send_packet(packet).await;
+        assert!(matches!(result, Err(QQClientError::InvalidState(_))));
+    }
+
+    #[tokio::test]
+    async fn mock_client_heartbeat_requires_positive_interval() -> QQClientResult<()> {
+        let client = MockQQClient::default();
+        client.connect(QQClientConfig::new("mock://localhost")).await?;
+        client.login("alice", "secret").await?;
+        let result = client.heartbeat(Duration::from_millis(0)).await;
+        assert!(matches!(result, Err(QQClientError::Timeout(_))));
+        Ok(())
     }
 }
