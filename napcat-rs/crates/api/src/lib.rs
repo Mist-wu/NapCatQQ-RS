@@ -1,201 +1,559 @@
 //! Public HTTP and WebSocket API surface.
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{fmt, net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
-    extract::ws::{Message, WebSocket, WebSocketUpgrade},
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::{get, post},
     Json, Router,
+    extract::{
+        Query, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+    },
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::{get, post},
 };
-use napcat_message::Message as NapMessage;
-use napcat_protocol::{ProtocolEvent, ProtocolResult};
+use napcat_message::{Message as NapMessage, MessageRecipient};
+use napcat_protocol::{ProtocolError, ProtocolEvent, ProtocolResult, serialize_event};
 use serde::{Deserialize, Serialize};
 use tokio::{
-    sync::{broadcast, RwLock},
-    time::{sleep, Duration},
+    sync::{RwLock, broadcast},
+    time::timeout,
 };
 
-/// API state shared across HTTP/WebSocket routes.
+/// Shared API state for HTTP and WebSocket handlers.
 #[derive(Clone)]
 pub struct ApiState {
     events: broadcast::Sender<ProtocolEvent>,
     runtime_running: Arc<RwLock<bool>>,
+    runtime_groups: Arc<RwLock<Vec<GroupInfo>>>,
+    runtime_users: Arc<RwLock<Vec<UserInfo>>>,
 }
 
+/// API response envelope for public interfaces.
+#[derive(Debug, Serialize)]
+pub struct ApiEnvelope<T>
+where
+    T: Serialize,
+{
+    /// ok for success, failed for error.
+    pub status: String,
+    /// OneBot compatibility return code.
+    pub retcode: i32,
+    /// Payload data.
+    pub data: T,
+    /// Optional response hint.
+    pub message: Option<String>,
+}
+
+/// Empty payload marker.
+#[derive(Debug, Serialize)]
+pub struct EmptyData;
+
+/// Runtime login status payload.
+#[derive(Debug, Serialize)]
+pub struct LoginStatusData {
+    /// Whether runtime is running.
+    pub online: bool,
+    /// Human readable message.
+    pub message: String,
+}
+
+/// Login info payload.
+#[derive(Debug, Serialize)]
+pub struct LoginInfoData {
+    /// Bot uid.
+    pub user_id: String,
+    /// Bot nickname.
+    pub nickname: String,
+    /// Current login state.
+    pub online: bool,
+}
+
+/// Group information.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GroupInfo {
+    /// Group id.
+    pub group_id: String,
+    /// Group display name.
+    pub group_name: String,
+}
+
+/// User information.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UserInfo {
+    /// User id.
+    pub user_id: String,
+    /// User display name.
+    pub nickname: String,
+}
+
+/// Generic message send request.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SendRequest {
+    /// Unified message payload.
+    pub message: NapMessage,
+}
+
+/// OneBot-compatible send request.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CompatSendRequest {
+    /// Message target type.
+    #[serde(default)]
+    pub message_type: MessageType,
+    /// Target user for private message.
+    pub user_id: Option<String>,
+    /// Target group for group message.
+    pub group_id: Option<String>,
+    /// Plain text payload.
+    pub message: String,
+}
+
+/// OneBot-compatible private send request.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SendPrivateRequest {
+    /// Target user id.
+    pub user_id: String,
+    /// Message payload.
+    pub message: String,
+}
+
+/// OneBot-compatible group send request.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SendGroupRequest {
+    /// Target group id.
+    pub group_id: String,
+    /// Message payload.
+    pub message: String,
+}
+
+/// Message send response.
+#[derive(Debug, Serialize)]
+pub struct SendResponse {
+    /// Whether message has been accepted by adapter.
+    pub accepted: bool,
+    /// Compatible message id for trace.
+    pub message_id: String,
+}
+
+/// Message route payload kind.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageType {
+    Private,
+    Group,
+}
+
+impl Default for MessageType {
+    fn default() -> Self {
+        Self::Private
+    }
+}
+
+/// listen options from query string.
+#[derive(Debug, Serialize, Deserialize)]
+struct ListenQuery {
+    /// Poll timeout in milliseconds.
+    timeout_ms: Option<u64>,
+    /// Max events to collect.
+    max_events: Option<usize>,
+}
+
+/// API-level error.
+#[derive(Debug)]
+pub enum ApiError {
+    /// Bad client payload.
+    InvalidRequest(String),
+    /// Event forwarding failed.
+    EventDispatch(String),
+}
+
+impl fmt::Display for ApiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ApiError::InvalidRequest(message) => write!(f, "invalid request: {message}"),
+            ApiError::EventDispatch(message) => write!(f, "event dispatch failed: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for ApiError {}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let (code, message) = match self {
+            ApiError::InvalidRequest(message) => (StatusCode::BAD_REQUEST, message),
+            ApiError::EventDispatch(message) => (StatusCode::SERVICE_UNAVAILABLE, message),
+        };
+
+        let payload = ApiEnvelope {
+            status: String::from("failed"),
+            retcode: -1,
+            data: EmptyData,
+            message: Some(message),
+        };
+
+        (code, Json(payload)).into_response()
+    }
+}
+
+type ApiResult<T> = Result<T, ApiError>;
+
 impl ApiState {
-    /// Create a default API state.
+    /// Create a default state with empty cache values.
     pub fn new() -> Self {
         let (events, _) = broadcast::channel(64);
         Self {
             events,
             runtime_running: Arc::new(RwLock::new(false)),
+            runtime_groups: Arc::new(RwLock::new(Vec::new())),
+            runtime_users: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
-    /// Build application router.
+    /// Replace internal running flag.
+    pub async fn set_runtime_running(&self, running: bool) {
+        let mut state = self.runtime_running.write().await;
+        *state = running;
+    }
+
+    /// Read internal running flag.
+    pub async fn is_runtime_running(&self) -> bool {
+        *self.runtime_running.read().await
+    }
+
+    /// Replace group cache.
+    pub async fn set_groups(&self, groups: Vec<GroupInfo>) {
+        let mut current = self.runtime_groups.write().await;
+        *current = groups;
+    }
+
+    /// Replace user cache.
+    pub async fn set_users(&self, users: Vec<UserInfo>) {
+        let mut current = self.runtime_users.write().await;
+        *current = users;
+    }
+
+    /// Build shared router.
     pub fn router(self) -> Router {
         Router::new()
+            .route("/health", get(health_check))
             .route("/login/status", get(login_status))
+            .route("/get_status", get(get_status_compat))
+            .route("/get_login_info", get(get_login_info))
             .route("/message/send", post(send_message))
+            .route("/send_msg", post(send_msg_compat))
+            .route("/send_private_msg", post(send_private_msg))
+            .route("/send_group_msg", post(send_group_msg))
             .route("/message/listen", get(listen_messages))
             .route("/groups", get(list_groups))
             .route("/users", get(list_users))
             .route("/ws", get(ws_upgrade))
             .with_state(self)
     }
+
+    fn emit_event(&self, event: ProtocolEvent) -> ApiResult<()> {
+        let _ = self.events.send(event);
+        Ok(())
+    }
 }
 
-/// Login status payload.
-#[derive(Debug, Serialize)]
-pub struct LoginStatusResponse {
-    /// Whether service runtime is online.
-    pub online: bool,
-    /// Informational text.
-    pub message: String,
-}
-
-/// Send request payload.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct SendRequest {
-    /// Message to send.
-    pub message: NapMessage,
-}
-
-/// Send response payload.
-#[derive(Debug, Serialize)]
-pub struct SendResponse {
-    /// Accepted flag.
-    pub accepted: bool,
-}
-
-async fn login_status(State(state): State<ApiState>) -> Json<LoginStatusResponse> {
-    let running = *state.runtime_running.read().await;
-    Json(LoginStatusResponse {
-        online: running,
-        message: if running {
-            "runtime running".to_string()
-        } else {
-            "runtime not started".to_string()
+fn compatibility_default_groups() -> Vec<GroupInfo> {
+    vec![
+        GroupInfo {
+            group_id: String::from("g1"),
+            group_name: String::from("devops"),
         },
+        GroupInfo {
+            group_id: String::from("g2"),
+            group_name: String::from("design"),
+        },
+    ]
+}
+
+fn compatibility_default_users() -> Vec<UserInfo> {
+    vec![
+        UserInfo {
+            user_id: String::from("u1"),
+            nickname: String::from("alice"),
+        },
+        UserInfo {
+            user_id: String::from("u2"),
+            nickname: String::from("bob"),
+        },
+    ]
+}
+
+fn message_id_from_text(message: &str) -> String {
+    format!("api-{message_len}", message_len = message.len())
+}
+
+async fn health_check() -> Json<ApiEnvelope<EmptyData>> {
+    Json(ApiEnvelope {
+        status: String::from("ok"),
+        retcode: 0,
+        data: EmptyData,
+        message: Some(String::from("napcat api ready")),
+    })
+}
+
+async fn login_status(
+    State(state): State<ApiState>,
+) -> ApiResult<Json<ApiEnvelope<LoginStatusData>>> {
+    let online = state.is_runtime_running().await;
+    Ok(Json(ApiEnvelope {
+        status: String::from("ok"),
+        retcode: if online { 0 } else { -1 },
+        data: LoginStatusData {
+            online,
+            message: if online {
+                String::from("runtime running")
+            } else {
+                String::from("runtime not started")
+            },
+        },
+        message: None,
+    }))
+}
+
+async fn get_status_compat(
+    state: State<ApiState>,
+) -> ApiResult<Json<ApiEnvelope<LoginStatusData>>> {
+    login_status(state).await
+}
+
+async fn get_login_info(
+    State(state): State<ApiState>,
+) -> ApiResult<Json<ApiEnvelope<LoginInfoData>>> {
+    let online = state.is_runtime_running().await;
+    let info = if online {
+        LoginInfoData {
+            user_id: String::from("napcat-bot"),
+            nickname: String::from("NapCatRS"),
+            online,
+        }
+    } else {
+        LoginInfoData {
+            user_id: String::from("offline"),
+            nickname: String::from("NapCatRS"),
+            online,
+        }
+    };
+
+    Ok(Json(ApiEnvelope {
+        status: if online {
+            String::from("ok")
+        } else {
+            String::from("failed")
+        },
+        retcode: if online { 0 } else { -1 },
+        message: if online {
+            None
+        } else {
+            Some(String::from("runtime not logged in"))
+        },
+        data: info,
+    }))
+}
+
+async fn list_groups(State(state): State<ApiState>) -> Json<ApiEnvelope<Vec<GroupInfo>>> {
+    let mut groups = state.runtime_groups.read().await.clone();
+    if groups.is_empty() {
+        groups = compatibility_default_groups();
+    }
+
+    Json(ApiEnvelope {
+        status: String::from("ok"),
+        retcode: 0,
+        data: groups,
+        message: None,
+    })
+}
+
+async fn list_users(State(state): State<ApiState>) -> Json<ApiEnvelope<Vec<UserInfo>>> {
+    let mut users = state.runtime_users.read().await.clone();
+    if users.is_empty() {
+        users = compatibility_default_users();
+    }
+
+    Json(ApiEnvelope {
+        status: String::from("ok"),
+        retcode: 0,
+        data: users,
+        message: None,
     })
 }
 
 async fn send_message(
     State(state): State<ApiState>,
     Json(payload): Json<SendRequest>,
-) -> (StatusCode, Json<SendResponse>) {
-    let event = ProtocolEvent::MessageReceived {
+) -> ApiResult<Json<ApiEnvelope<SendResponse>>> {
+    validate_message(&payload.message)?;
+    push_send_event(&state, payload.message).await
+}
+
+async fn send_msg_compat(
+    State(state): State<ApiState>,
+    Json(payload): Json<CompatSendRequest>,
+) -> ApiResult<Json<ApiEnvelope<SendResponse>>> {
+    let message = payload.into_napcat_message()?;
+    push_send_event(&state, message).await
+}
+
+async fn send_private_msg(
+    State(state): State<ApiState>,
+    Json(payload): Json<SendPrivateRequest>,
+) -> ApiResult<Json<ApiEnvelope<SendResponse>>> {
+    let request = CompatSendRequest {
+        message_type: MessageType::Private,
+        user_id: Some(payload.user_id),
+        group_id: None,
         message: payload.message,
     };
-    let _ = state.events.send(event);
-    (
-        StatusCode::OK,
-        Json(SendResponse {
-            accepted: true,
-        }),
-    )
+    let message = request.into_napcat_message()?;
+    push_send_event(&state, message).await
 }
 
-#[derive(Debug, Serialize)]
-struct Group {
-    id: String,
-    name: String,
-}
-
-#[derive(Debug, Serialize)]
-struct User {
-    id: String,
-    nickname: String,
-}
-
-async fn list_groups() -> Json<Vec<Group>> {
-    Json(vec![
-        Group {
-            id: "g1".to_string(),
-            name: "devops".to_string(),
-        },
-        Group {
-            id: "g2".to_string(),
-            name: "design".to_string(),
-        },
-    ])
-}
-
-async fn list_users() -> Json<Vec<User>> {
-    Json(vec![
-        User {
-            id: "u1".to_string(),
-            nickname: "alice".to_string(),
-        },
-        User {
-            id: "u2".to_string(),
-            nickname: "bob".to_string(),
-        },
-    ])
-}
-
-async fn ws_upgrade(
-    ws: WebSocketUpgrade,
+async fn send_group_msg(
     State(state): State<ApiState>,
-) -> impl IntoResponse {
+    Json(payload): Json<SendGroupRequest>,
+) -> ApiResult<Json<ApiEnvelope<SendResponse>>> {
+    let request = CompatSendRequest {
+        message_type: MessageType::Group,
+        user_id: None,
+        group_id: Some(payload.group_id),
+        message: payload.message,
+    };
+    let message = request.into_napcat_message()?;
+    push_send_event(&state, message).await
+}
+
+async fn listen_messages(
+    State(state): State<ApiState>,
+    Query(query): Query<ListenQuery>,
+) -> Json<ApiEnvelope<Vec<String>>> {
+    let timeout_ms = query.timeout_ms.unwrap_or(200);
+    let max_events = query.max_events.unwrap_or(8).clamp(1, 32);
+    let mut rx = state.events.subscribe();
+    let mut records = Vec::with_capacity(max_events);
+
+    for _ in 0..max_events {
+        let event_result = timeout(Duration::from_millis(timeout_ms), rx.recv()).await;
+        match event_result {
+            Ok(Ok(event)) => {
+                if let Ok(serialized) = serialize_event(&event) {
+                    records.push(serialized);
+                }
+            }
+            _ => {
+                break;
+            }
+        }
+    }
+
+    Json(ApiEnvelope {
+        status: String::from("ok"),
+        retcode: 0,
+        data: records,
+        message: None,
+    })
+}
+
+async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<ApiState>) -> impl IntoResponse {
     ws.on_upgrade(|socket| ws_handler(socket, state))
 }
 
 async fn ws_handler(mut socket: WebSocket, state: ApiState) {
     let mut rx = state.events.subscribe();
-    loop {
-        match rx.recv().await {
-            Ok(event) => {
-                if let Ok(text) = serde_json::to_string(&event) {
-                    if socket.send(Message::Text(text.into())).await.is_err() {
-                        break;
-                    }
-                }
-            }
-            Err(_error) => {
+    while let Ok(event) = rx.recv().await {
+        if let Ok(serialized) = serialize_event(&event) {
+            if socket.send(Message::Text(serialized.into())).await.is_err() {
                 break;
             }
         }
     }
 }
 
-async fn listen_messages(
-    State(state): State<ApiState>,
-) -> Json<Vec<String>> {
-    let mut events: Vec<String> = Vec::new();
-    let mut rx = state.events.subscribe();
-    for _ in 0..2 {
-        if let Ok(event) = rx.recv().await {
-            if let Ok(payload) = serde_json::to_string(&event) {
-                events.push(payload);
-            }
-        }
-        sleep(Duration::from_millis(5)).await;
-    }
+async fn push_send_event(
+    state: &ApiState,
+    message: NapMessage,
+) -> ApiResult<Json<ApiEnvelope<SendResponse>>> {
+    state.emit_event(ProtocolEvent::MessageReceived {
+        message: message.clone(),
+    })?;
 
-    Json(events)
+    Ok(Json(ApiEnvelope {
+        status: String::from("ok"),
+        retcode: 0,
+        data: SendResponse {
+            accepted: true,
+            message_id: message.id,
+        },
+        message: None,
+    }))
 }
 
+fn validate_message(message: &NapMessage) -> ApiResult<()> {
+    match &message.recipient {
+        MessageRecipient::Private { user_id } if user_id.is_empty() => Err(
+            ApiError::InvalidRequest(String::from("private user_id cannot be empty")),
+        ),
+        MessageRecipient::Group { group_id } if group_id.is_empty() => Err(
+            ApiError::InvalidRequest(String::from("group_id cannot be empty")),
+        ),
+        _ => Ok(()),
+    }
+}
+
+impl CompatSendRequest {
+    fn into_napcat_message(self) -> ApiResult<NapMessage> {
+        let recipient = match self.message_type {
+            MessageType::Private => {
+                let user_id = self.user_id.unwrap_or_default();
+                if user_id.is_empty() {
+                    return Err(ApiError::InvalidRequest(String::from(
+                        "user_id is required for private messages",
+                    )));
+                }
+                MessageRecipient::Private { user_id }
+            }
+            MessageType::Group => {
+                let group_id = self.group_id.unwrap_or_default();
+                if group_id.is_empty() {
+                    return Err(ApiError::InvalidRequest(String::from(
+                        "group_id is required for group messages",
+                    )));
+                }
+                MessageRecipient::Group { group_id }
+            }
+        };
+
+        Ok(NapMessage::text(
+            message_id_from_text(&self.message),
+            "api",
+            recipient,
+            self.message,
+        ))
+    }
+}
+
+/// Start API server with in-memory state.
 pub async fn run(addr: &str) -> ProtocolResult<()> {
     let state = ApiState::new();
+    state.set_groups(compatibility_default_groups()).await;
+    state.set_users(compatibility_default_users()).await;
+
     let app = state.router();
-    let socket_addr = addr.parse::<SocketAddr>();
-    let socket_addr = match socket_addr {
-        Ok(value) => value,
-        Err(error) => {
-            return Err(napcat_protocol::ProtocolError::Transport(error.to_string()));
-        }
-    };
+    let socket_addr = addr
+        .parse::<SocketAddr>()
+        .map_err(|err| ProtocolError::Transport(err.to_string()))?;
+
     let listener = tokio::net::TcpListener::bind(socket_addr)
         .await
-        .map_err(|err| napcat_protocol::ProtocolError::Transport(err.to_string()))?;
-    tracing::info!(%socket_addr, "start api server");
+        .map_err(|err| ProtocolError::Transport(err.to_string()))?;
+
     axum::serve(listener, app)
         .await
-        .map_err(|err| napcat_protocol::ProtocolError::Transport(err.to_string()))
+        .map_err(|err| ProtocolError::Transport(err.to_string()))
 }
 
 #[cfg(test)]
@@ -225,14 +583,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_send_route_returns_accepted() {
+    async fn api_send_route_emits_event() {
         let state = ApiState::new();
         let app = state.router();
         let req_message = SendRequest {
             message: NapMessage::text(
                 "m",
                 "sender",
-                napcat_message::MessageRecipient::Private {
+                MessageRecipient::Private {
                     user_id: "u".to_string(),
                 },
                 "hi",
@@ -254,5 +612,63 @@ mod tests {
             .expect("request should pass");
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn api_send_private_compat_works() {
+        let state = ApiState::new();
+        let app = state.router();
+        let payload = serde_json::to_string(&SendPrivateRequest {
+            user_id: "u1".to_string(),
+            message: "hello".to_string(),
+        })
+        .expect("payload serialize");
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/send_private_msg")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("request should pass");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn api_group_and_user_route_works() {
+        let state = ApiState::new();
+        let app = state.router();
+
+        let groups = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/groups")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("request should pass");
+
+        let users = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/users")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("request should pass");
+
+        assert_eq!(groups.status(), StatusCode::OK);
+        assert_eq!(users.status(), StatusCode::OK);
     }
 }

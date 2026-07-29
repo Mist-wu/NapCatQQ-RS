@@ -4,6 +4,7 @@
 
 - Initial Rust rewrite scaffold created for `napcat-rs` workspace.
 - Implement HTTP and WebSocket API module with login/message/group/user endpoints and runtime event stream, plus `SendRequest` serialization and endpoint tests.
+- Finalize API compatibility layer and stabilize API send/listen behavior: add response envelope serialization, protocol error conversion, and successful compatibility responses.
 
 ## [stage-2] 2026-07-29
 - Initialize workspace `napcat-rs` with crates: `core`, `protocol`, `message`, `api`, `plugin`, `storage`, `config`, `cli`.
