@@ -222,8 +222,8 @@ impl ApiState {
             events,
             dispatch_tx,
             runtime_running: Arc::new(RwLock::new(false)),
-            runtime_groups: Arc::new(RwLock::new(Arc::new(compatibility_default_groups()))),
-            runtime_users: Arc::new(RwLock::new(Arc::new(compatibility_default_users()))),
+            runtime_groups: Arc::new(RwLock::new(Arc::new(Vec::new()))),
+            runtime_users: Arc::new(RwLock::new(Arc::new(Vec::new()))),
         }
     }
 
@@ -400,7 +400,11 @@ async fn list_groups(State(state): State<ApiState>) -> Json<ApiEnvelope<Vec<Grou
     Json(ApiEnvelope {
         status: String::from("ok"),
         retcode: 0,
-        data: groups.as_ref().clone(),
+        data: if groups.as_ref().is_empty() {
+            compatibility_default_groups()
+        } else {
+            groups.as_ref().clone()
+        },
         message: None,
     })
 }
@@ -411,7 +415,11 @@ async fn list_users(State(state): State<ApiState>) -> Json<ApiEnvelope<Vec<UserI
     Json(ApiEnvelope {
         status: String::from("ok"),
         retcode: 0,
-        data: users.as_ref().clone(),
+        data: if users.as_ref().is_empty() {
+            compatibility_default_users()
+        } else {
+            users.as_ref().clone()
+        },
         message: None,
     })
 }
