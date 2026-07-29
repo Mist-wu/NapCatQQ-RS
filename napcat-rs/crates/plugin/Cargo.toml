@@ -3,8 +3,13 @@ name = "napcat-plugin"
 version = "0.1.0"
 edition.workspace = true
 publish = false
+authors = ["NapCatQQ-RS"]
 
 [dependencies]
-tokio.workspace = true
+async-trait = "0.1"
 serde.workspace = true
+serde_json.workspace = true
+thiserror = "1.0"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "process"] }
 tracing.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
