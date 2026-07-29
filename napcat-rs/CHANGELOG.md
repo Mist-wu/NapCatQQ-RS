@@ -27,6 +27,10 @@
   - Extend `MockQQClient` with stateful endpoint/token/heartbeat metadata and packet queues.
   - Add outbound packet capture and inbound injection helpers.
   - Add unit tests for pre-login send rejection, packet round trip, and heartbeat validation.
+- feat(config): add QQ credentials to runtime configuration
+  - Add `qq_account` and `qq_password` to config patch.
+  - Add `NAPCAT_QQ_ACCOUNT` / `NAPCAT_QQ_PASSWORD` environment overrides.
+  - Keep defaults empty to preserve mock/backend compatibility.
 - feat(message): add video message element support
   - Extend unified message model with `MessageElement::Video`.
   - Add `is_video_message` helper and JSON round-trip coverage.

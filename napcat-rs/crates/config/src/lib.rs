@@ -25,6 +25,10 @@ pub struct AppConfig {
     pub protocol_endpoint: String,
     /// Optional protocol access token.
     pub protocol_access_token: Option<String>,
+    /// QQ account identifier for real QQ login.
+    pub qq_account: Option<String>,
+    /// QQ account secret or auth ticket.
+    pub qq_password: Option<String>,
     /// Protocol listener poll timeout.
     pub protocol_listen_timeout_ms: u64,
     /// Protocol listener max batch size.
@@ -41,6 +45,8 @@ pub struct AppConfigPatch {
     protocol_mode: Option<String>,
     protocol_endpoint: Option<String>,
     protocol_access_token: Option<Option<String>>,
+    qq_account: Option<Option<String>>,
+    qq_password: Option<Option<String>>,
     protocol_listen_timeout_ms: Option<u64>,
     protocol_listen_max_events: Option<usize>,
 }
@@ -115,6 +121,14 @@ impl AppConfig {
             patch.protocol_access_token = Some(Some(protocol_access_token));
         }
 
+        if let Some(qq_account) = env_var_optional("NAPCAT_QQ_ACCOUNT") {
+            patch.qq_account = Some(Some(qq_account));
+        }
+
+        if let Some(qq_password) = env_var_optional("NAPCAT_QQ_PASSWORD") {
+            patch.qq_password = Some(Some(qq_password));
+        }
+
         if let Some(timeout_text) = env_var_optional("NAPCAT_PROTOCOL_LISTEN_TIMEOUT_MS") {
             patch.protocol_listen_timeout_ms = Some(timeout_text.parse::<u64>().map_err(
                 |error| ConfigError::EnvParse {
@@ -158,6 +172,12 @@ impl AppConfig {
         if let Some(protocol_access_token) = patch.protocol_access_token {
             self.protocol_access_token = protocol_access_token;
         }
+        if let Some(qq_account) = patch.qq_account {
+            self.qq_account = qq_account;
+        }
+        if let Some(qq_password) = patch.qq_password {
+            self.qq_password = qq_password;
+        }
         if let Some(protocol_listen_timeout_ms) = patch.protocol_listen_timeout_ms {
             self.protocol_listen_timeout_ms = protocol_listen_timeout_ms;
         }
@@ -177,6 +197,8 @@ impl Default for AppConfig {
             protocol_mode: String::from("mock"),
             protocol_endpoint: String::new(),
             protocol_access_token: None,
+            qq_account: None,
+            qq_password: None,
             protocol_listen_timeout_ms: 600,
             protocol_listen_max_events: 8,
         }
