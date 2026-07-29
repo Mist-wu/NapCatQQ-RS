@@ -201,7 +201,7 @@ impl QQClientBackend {
     fn decode_inbound_packet(packet: Packet) -> ProtocolResult<Option<ProtocolEvent>> {
         match packet.route.as_str() {
             QQ_CLIENT_PACKET_MESSAGE_INCOMING => decode_json(&packet.payload)
-                .map(|message| ProtocolEvent::MessageReceived { message })
+                .map(|message| Some(ProtocolEvent::MessageReceived { message }))
                 .map_err(|error| ProtocolError::Serialization(error.to_string())),
             QQ_CLIENT_PACKET_MESSAGE_CONNECTED => {
                 Ok(Some(ProtocolEvent::Connected { endpoint: packet.payload }))

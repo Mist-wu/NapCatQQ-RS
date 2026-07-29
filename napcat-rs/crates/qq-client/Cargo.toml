@@ -8,7 +8,7 @@ authors = ["NapCatQQ-RS"]
 async-trait = "0.1"
 serde = { workspace = true }
 serde_json.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["io-util", "net"] }
 thiserror.workspace = true
 
 [dev-dependencies]

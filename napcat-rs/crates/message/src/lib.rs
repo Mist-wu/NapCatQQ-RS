@@ -15,6 +15,7 @@ pub enum MessageChannel {
 
 /// Unified recipient descriptor.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
 pub enum MessageRecipient {
     /// Private recipient.
     Private { user_id: String },

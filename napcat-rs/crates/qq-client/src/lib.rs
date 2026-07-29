@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::VecDeque,
-    net::Shutdown,
     time::{Duration, SystemTime},
 };
 use thiserror::Error;
@@ -404,10 +403,25 @@ impl TcpQQClient {
         }
 
         let timeout_ms = *self.timeout_ms.lock().await;
-        let mut stream = self.stream.lock().await;
-        let stream = match stream.as_mut() {
-            Some(value) => value,
-            None => return Ok(None),
+        let stream = {
+            let mut stream_slot = self.stream.lock().await;
+            let stream = stream_slot
+                .take()
+                .ok_or_else(|| QQClientError::Transport(String::from("not connected")))?;
+
+            let std_stream = stream
+                .into_std()
+                .map_err(|error| QQClientError::Transport(error.to_string()))?;
+            let reader_stream = std_stream
+                .try_clone()
+                .map_err(|error| QQClientError::Transport(error.to_string()))?;
+            let read_stream = TcpStream::from_std(reader_stream)
+                .map_err(|error| QQClientError::Transport(error.to_string()))?;
+            let write_stream = TcpStream::from_std(std_stream)
+                .map_err(|error| QQClientError::Transport(error.to_string()))?;
+
+            *stream_slot = Some(write_stream);
+            read_stream
         };
 
         let mut reader = BufReader::new(stream);
@@ -596,10 +610,13 @@ impl QQClient for TcpQQClient {
         self.set_state(ConnectionState::Closing).await;
         {
             let mut stream = self.stream.lock().await;
-            if let Some(stream) = stream.as_mut() {
-                let _ = stream.shutdown(Shutdown::Both);
+            let stream = stream.take();
+            if let Some(stream) = stream {
+                let _ = stream.into_std().and_then(|stream| {
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    Ok(())
+                });
             }
-            stream.take();
         }
 
         *self.endpoint.lock().await = None;
@@ -919,7 +936,7 @@ mod tests {
     async fn tcp_client_reconnect_can_receive_again_after_disconnect() -> QQClientResult<()> {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
-        use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+        use tokio::io::{AsyncWriteExt, BufReader};
         use tokio::net::TcpListener;
 
         let listener = TcpListener::bind("127.0.0.1:0")
