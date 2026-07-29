@@ -177,7 +177,7 @@ impl MessageHandler for EchoHandler {
     }
 
     async fn handle(&self, message: &Message) -> MessageResult<HandleResult> {
-        match message.recipient {
+        match &message.recipient {
             MessageRecipient::Group { group_id } => Ok(HandleResult {
                 accepted: true,
                 detail: format!("group:{group_id}"),
