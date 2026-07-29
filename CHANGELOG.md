@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- ci: add root-level GitHub Actions workflow to run fmt/clippy/test/bench in napcat-rs workspace.
 - docs: refresh benchmark timing summary in `docs/test-report.md` to latest `cargo bench` output.
 - docs: add root docs/performance.md and root docs/security-review.md; refresh docs/test-report.md with latest bench and test counts.
 - feat(api): expose runtime running state during run lifetime and add login status runtime online test.
