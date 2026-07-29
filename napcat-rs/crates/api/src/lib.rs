@@ -762,23 +762,35 @@ pub async fn run_with_protocol(
 /// Start API server with a pre-created state.
 pub async fn run_with_state(addr: &str, state: ApiState) -> ProtocolResult<()> {
     state.set_runtime_running(true).await;
+    let socket_addr = match addr.parse::<SocketAddr>() {
+        Ok(socket_addr) => socket_addr,
+        Err(err) => {
+            state.set_runtime_running(false).await;
+            return Err(ProtocolError::Transport(err.to_string()));
+        }
+    };
+
     if let Some(protocol) = state.protocol.clone() {
-        protocol
+        if let Err(error) = protocol
             .listen(state.protocol_event_sender())
             .await
             .map_err(|error| {
                 ProtocolError::Transport(format!("protocol listen failed: {error}"))
-            })?;
+            })
+        {
+            state.set_runtime_running(false).await;
+            return Err(error);
+        }
     }
 
     let app = state.clone().router();
-    let socket_addr = addr
-        .parse::<SocketAddr>()
-        .map_err(|err| ProtocolError::Transport(err.to_string()))?;
-
-    let listener = tokio::net::TcpListener::bind(socket_addr)
-        .await
-        .map_err(|err| ProtocolError::Transport(err.to_string()))?;
+    let listener = match tokio::net::TcpListener::bind(socket_addr).await {
+        Ok(listener) => listener,
+        Err(err) => {
+            state.set_runtime_running(false).await;
+            return Err(ProtocolError::Transport(err.to_string()));
+        }
+    };
 
     let serve_result = axum::serve(listener, app)
         .await
