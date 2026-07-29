@@ -15,3 +15,5 @@
   - Restrict plugin HTTP endpoints to `http`/`https` and use URL-join for request path building.
   - Enforce bounded plugin timeout range and add unit tests.
   - Add security findings and mitigations in `docs/security-review.md`.
+- feat(ci): add GitHub Actions CI pipeline
+  - Add workflow for `cargo fmt`, `cargo clippy`, and full test suite on push / pull request.
