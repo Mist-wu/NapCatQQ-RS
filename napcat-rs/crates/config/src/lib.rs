@@ -191,16 +191,16 @@ mod tests {
     fn with_env_restore(name: &str, value: Option<&str>) -> Option<String> {
         let previous = env::var(name).ok();
         match value {
-            Some(next) => env::set_var(name, next),
-            None => env::remove_var(name),
+            Some(next) => unsafe { env::set_var(name, next) },
+            None => unsafe { env::remove_var(name) },
         }
         previous
     }
 
     fn restore_env(name: &str, previous: Option<String>) {
         match previous {
-            Some(value) => env::set_var(name, value),
-            None => env::remove_var(name),
+            Some(value) => unsafe { env::set_var(name, value) },
+            None => unsafe { env::remove_var(name) },
         }
     }
 
@@ -269,7 +269,7 @@ mod tests {
 
         let loaded = AppConfig::load_file(&path)?;
         fs::remove_file(&path).map_err(|error| ConfigError::FileRead {
-            path: path,
+            path,
             source: error,
         })?;
 

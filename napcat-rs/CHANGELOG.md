@@ -17,3 +17,5 @@
   - Add security findings and mitigations in `docs/security-review.md`.
 - feat(ci): add GitHub Actions CI pipeline
   - Add workflow for `cargo fmt`, `cargo clippy`, and full test suite on push / pull request.
+- fix(clippy): make config tests compile clean under stricter clippy warnings
+  - Fix redundant struct field names and restore required unsafe blocks for env var mutation in tests.
