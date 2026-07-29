@@ -27,6 +27,9 @@
   - Add `napcat-event` generic broadcast event bus with envelope metadata.
   - Update API state event pipeline to publish protocol events through `EventBus`.
   - Add protocol transport analysis scaffold in `docs/protocol/transport-analysis.md`.
+- chore(docs): add original analysis notes and e2e execution plan
+  - Add `docs/original-analysis.md` with module mapping and completion差距清单。
+  - Add `tests/e2e/README.md` with end-to-end smoke plan and pass criteria。
 - feat(ci): add GitHub Actions CI pipeline
   - Add workflow for `cargo fmt`, `cargo clippy`, and full test suite on push / pull request.
 - fix(clippy): make config tests compile clean under stricter clippy warnings
