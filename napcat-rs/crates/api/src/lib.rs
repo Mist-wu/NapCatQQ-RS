@@ -720,9 +720,13 @@ async fn send_message(
     State(state): State<ApiState>,
     Json(payload): Json<SendRequest>,
 ) -> ApiResult<Json<ApiEnvelope<SendResponse>>> {
-    validate_message_payload(&payload.message)?;
-    validate_message(&payload.message)?;
-    push_send_event(&state, payload.message).await
+    let mut message = payload.message;
+    message.id = message.id.trim().to_string();
+    message.sender_id = message.sender_id.trim().to_string();
+
+    validate_message_payload(&message)?;
+    validate_message(&message)?;
+    push_send_event(&state, message).await
 }
 
 async fn send_msg_compat(
@@ -1612,6 +1616,46 @@ mod tests {
             serde_json::from_slice(&body).expect("send request payload");
         assert_eq!(envelope["status"], "failed");
         assert_eq!(envelope["retcode"], -1);
+    }
+
+    #[tokio::test]
+    async fn api_send_route_trims_message_id_and_sender() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+        let payload = serde_json::to_string(&SendRequest {
+            message: NapMessage {
+                id: String::from("  msg-1 \n"),
+                sender_id: String::from("  alice"),
+                recipient: MessageRecipient::Private {
+                    user_id: String::from("u1"),
+                },
+                elements: vec![napcat_message::MessageElement::Text {
+                    text: String::from("hello"),
+                }],
+            },
+        })
+        .expect("payload serialize");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/message/send")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("request should pass");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024)
+            .await
+            .expect("send request body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("send request payload");
+        assert_eq!(envelope["status"], "ok");
+        assert_eq!(envelope["data"]["message_id"], "msg-1");
     }
 
     #[tokio::test]
