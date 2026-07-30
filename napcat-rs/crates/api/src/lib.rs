@@ -409,6 +409,7 @@ impl ApiState {
             .route("/get_group_info", post(get_group_info))
             .route("/get_friend_list", get(get_friend_list))
             .route("/message/listen", get(listen_messages))
+            .route("/get_events", get(listen_messages))
             .route("/groups", get(list_groups))
             .route("/users", get(list_users))
             .route("/plugin/load", post(plugin_load))
@@ -1170,6 +1171,31 @@ mod tests {
             .expect("request should pass");
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn api_get_events_route_is_alias_of_message_listen() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/get_events?timeout_ms=1&max_events=1")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("get_events request should pass");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024)
+            .await
+            .expect("get_events body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("get_events payload");
+        assert_eq!(envelope["status"], "ok");
     }
 
     #[tokio::test]
