@@ -418,6 +418,7 @@ impl ApiState {
             .route("/send_group_msg", post(send_group_msg))
             .route("/delete_msg", post(delete_msg))
             .route("/get_group_info", post(get_group_info))
+            .route("/get_group_list", get(list_groups))
             .route("/get_friend_list", get(get_friend_list))
             .route("/message/listen", get(listen_messages))
             .route("/get_events", get(listen_messages))
@@ -1302,6 +1303,32 @@ mod tests {
         let event = serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
             .expect("event json parse");
         assert_eq!(event["post_type"], "message");
+    }
+
+    #[tokio::test]
+    async fn api_get_group_list_route_is_alias_of_groups() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/get_group_list")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("get_group_list request should pass");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024)
+            .await
+            .expect("get_group_list body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("get_group_list payload");
+        let data = envelope["data"].as_array().expect("groups array");
+        assert!(!data.is_empty());
     }
 
     #[tokio::test]
