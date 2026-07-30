@@ -271,6 +271,8 @@ struct ListenQuery {
     timeout: Option<u64>,
     /// Max events to collect.
     max_events: Option<usize>,
+    /// Max events to collect (compatibility alias).
+    limit: Option<usize>,
     /// Filter by OneBot event type (comma-separated).
     #[serde(rename = "type")]
     #[serde(alias = "types")]
@@ -831,7 +833,7 @@ async fn listen_messages(
         .timeout_ms
         .or_else(|| query.timeout.map(|value| value.saturating_mul(1000)))
         .unwrap_or(200);
-    let max_events = query.max_events.unwrap_or(8).clamp(1, 32);
+    let max_events = query.max_events.or(query.limit).unwrap_or(8).clamp(1, 32);
     let mut rx = state.events.subscribe();
     let event_types = parse_event_types(&query);
     let mut records = Vec::with_capacity(max_events);
@@ -1286,6 +1288,59 @@ mod tests {
         let event = serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
             .expect("event json parse");
         assert_eq!(event["post_type"], "message");
+    }
+
+    #[tokio::test]
+    async fn api_get_events_route_supports_compatibility_limit_alias() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+
+        state
+            .emit_event(ProtocolEvent::MessageReceived {
+                message: NapMessage::text(
+                    "msg-limit-1",
+                    "sender",
+                    MessageRecipient::Private {
+                        user_id: "u-1".to_string(),
+                    },
+                    "hello",
+                ),
+            })
+            .await
+            .expect("emit message event");
+        state
+            .emit_event(ProtocolEvent::MessageReceived {
+                message: NapMessage::text(
+                    "msg-limit-2",
+                    "sender",
+                    MessageRecipient::Private {
+                        user_id: "u-2".to_string(),
+                    },
+                    "world",
+                ),
+            })
+            .await
+            .expect("emit message event");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/get_events?limit=1&timeout_ms=50")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("get_events request should pass");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 2048)
+            .await
+            .expect("get_events body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("get_events payload");
+        let data = envelope["data"].as_array().expect("event list");
+        assert_eq!(data.len(), 1);
     }
 
     #[tokio::test]
