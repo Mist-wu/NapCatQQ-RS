@@ -679,6 +679,7 @@ async fn send_message(
     State(state): State<ApiState>,
     Json(payload): Json<SendRequest>,
 ) -> ApiResult<Json<ApiEnvelope<SendResponse>>> {
+    validate_message_payload(&payload.message)?;
     validate_message(&payload.message)?;
     push_send_event(&state, payload.message).await
 }
@@ -687,6 +688,11 @@ async fn send_msg_compat(
     State(state): State<ApiState>,
     Json(payload): Json<CompatSendRequest>,
 ) -> ApiResult<Json<ApiEnvelope<SendResponse>>> {
+    if payload.message.trim().is_empty() {
+        return Err(ApiError::InvalidRequest(String::from(
+            "message cannot be empty",
+        )));
+    }
     let message = payload.into_napcat_message()?;
     push_send_event(&state, message).await
 }
@@ -695,6 +701,11 @@ async fn send_private_msg(
     State(state): State<ApiState>,
     Json(payload): Json<SendPrivateRequest>,
 ) -> ApiResult<Json<ApiEnvelope<SendResponse>>> {
+    if payload.message.trim().is_empty() {
+        return Err(ApiError::InvalidRequest(String::from(
+            "message cannot be empty",
+        )));
+    }
     let request = CompatSendRequest {
         message_type: MessageType::Private,
         user_id: Some(payload.user_id),
@@ -709,6 +720,11 @@ async fn send_group_msg(
     State(state): State<ApiState>,
     Json(payload): Json<SendGroupRequest>,
 ) -> ApiResult<Json<ApiEnvelope<SendResponse>>> {
+    if payload.message.trim().is_empty() {
+        return Err(ApiError::InvalidRequest(String::from(
+            "message cannot be empty",
+        )));
+    }
     let request = CompatSendRequest {
         message_type: MessageType::Group,
         user_id: None,
@@ -1095,8 +1111,24 @@ fn validate_message(message: &NapMessage) -> ApiResult<()> {
     }
 }
 
+fn validate_message_payload(message: &NapMessage) -> ApiResult<()> {
+    if message.elements.is_empty() {
+        Err(ApiError::InvalidRequest(String::from(
+            "message payload cannot be empty",
+        )))
+    } else {
+        Ok(())
+    }
+}
+
 impl CompatSendRequest {
     fn into_napcat_message(self) -> ApiResult<NapMessage> {
+        if self.message.trim().is_empty() {
+            return Err(ApiError::InvalidRequest(String::from(
+                "message cannot be empty",
+            )));
+        }
+
         let recipient = match self.message_type {
             MessageType::Private => {
                 let user_id = self.user_id.unwrap_or_default();
@@ -1303,6 +1335,98 @@ mod tests {
             .expect("request should pass");
 
         assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024)
+            .await
+            .expect("send private response");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("send private payload");
+        assert_eq!(envelope["status"], "ok");
+        assert_eq!(envelope["data"]["accepted"], true);
+        assert!(envelope["data"]["message_id"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn api_send_group_compat_works_and_returns_message_id() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+        let payload = serde_json::to_string(&SendGroupRequest {
+            group_id: "g1".to_string(),
+            message: "hello".to_string(),
+        })
+        .expect("payload serialize");
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/send_group_msg")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("request should pass");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024)
+            .await
+            .expect("send group response");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("send group payload");
+        assert_eq!(envelope["status"], "ok");
+        assert_eq!(envelope["data"]["accepted"], true);
+        assert!(envelope["data"]["message_id"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn api_send_private_rejects_empty_message() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+        let payload = serde_json::to_string(&SendPrivateRequest {
+            user_id: "u1".to_string(),
+            message: "   ".to_string(),
+        })
+        .expect("payload serialize");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/send_private_msg")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("request should pass");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn api_send_group_rejects_empty_message() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+        let payload = serde_json::to_string(&SendGroupRequest {
+            group_id: "g1".to_string(),
+            message: " ".to_string(),
+        })
+        .expect("payload serialize");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/send_group_msg")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("request should pass");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
