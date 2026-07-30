@@ -1143,10 +1143,10 @@ async fn push_send_event(
 
 fn validate_message(message: &NapMessage) -> ApiResult<()> {
     match &message.recipient {
-        MessageRecipient::Private { user_id } if user_id.is_empty() => Err(
+        MessageRecipient::Private { user_id } if user_id.trim().is_empty() => Err(
             ApiError::invalid_request(String::from("private user_id cannot be empty")),
         ),
-        MessageRecipient::Group { group_id } if group_id.is_empty() => Err(
+        MessageRecipient::Group { group_id } if group_id.trim().is_empty() => Err(
             ApiError::invalid_request(String::from("group_id cannot be empty")),
         ),
         _ => Ok(()),
@@ -1173,7 +1173,7 @@ impl CompatSendRequest {
 
         let recipient = match self.message_type {
             MessageType::Private => {
-                let user_id = self.user_id.unwrap_or_default();
+                let user_id = self.user_id.unwrap_or_default().trim().to_string();
                 if user_id.is_empty() {
                     return Err(ApiError::invalid_request(String::from(
                         "user_id is required for private messages",
@@ -1182,7 +1182,7 @@ impl CompatSendRequest {
                 MessageRecipient::Private { user_id }
             }
             MessageType::Group => {
-                let group_id = self.group_id.unwrap_or_default();
+                let group_id = self.group_id.unwrap_or_default().trim().to_string();
                 if group_id.is_empty() {
                     return Err(ApiError::invalid_request(String::from(
                         "group_id is required for group messages",
@@ -1479,6 +1479,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_send_private_rejects_whitespace_user_id() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+        let payload = serde_json::to_string(&SendPrivateRequest {
+            user_id: "   ".to_string(),
+            message: "hello".to_string(),
+        })
+        .expect("payload serialize");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/send_private_msg")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("request should pass");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 1024)
+            .await
+            .expect("send private response body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("send private payload");
+        assert_eq!(envelope["status"], "failed");
+        assert_eq!(envelope["retcode"], -1);
+        assert_eq!(
+            envelope["message"].as_str(),
+            Some("user_id is required for private messages")
+        );
+    }
+
+    #[tokio::test]
     async fn api_send_group_rejects_empty_message() {
         let state = ApiState::new();
         let app = state.clone().router();
@@ -1501,6 +1537,42 @@ mod tests {
             .expect("request should pass");
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn api_send_group_rejects_whitespace_group_id() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+        let payload = serde_json::to_string(&SendGroupRequest {
+            group_id: "   ".to_string(),
+            message: "hello".to_string(),
+        })
+        .expect("payload serialize");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/send_group_msg")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("request should pass");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 1024)
+            .await
+            .expect("send group response body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("send group payload");
+        assert_eq!(envelope["status"], "failed");
+        assert_eq!(envelope["retcode"], -1);
+        assert_eq!(
+            envelope["message"].as_str(),
+            Some("group_id is required for group messages")
+        );
     }
 
     #[tokio::test]
