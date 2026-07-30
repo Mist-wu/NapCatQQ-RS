@@ -142,6 +142,26 @@ pub struct PluginListResponse {
     pub plugins: Vec<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PluginMetadataRequest {
+    /// Plugin unique name.
+    pub name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PluginMetadataResponse {
+    /// Plugin metadata.
+    pub metadata: PluginMetadata,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PluginStatusResponse {
+    /// Runtime running status.
+    pub running: bool,
+    /// Loaded plugin count.
+    pub plugin_count: usize,
+}
+
 #[derive(Debug, Serialize)]
 pub struct PluginKindItem {
     /// Plugin unique name.
@@ -390,6 +410,8 @@ impl ApiState {
             .route("/plugin/unload", post(plugin_unload))
             .route("/plugin/list", get(plugin_list))
             .route("/plugin/kinds", get(plugin_kinds))
+            .route("/plugin/metadata", post(plugin_metadata))
+            .route("/plugin/status", get(plugin_status))
             .route("/ws", get(ws_upgrade))
             .with_state(self)
     }
@@ -754,6 +776,38 @@ async fn plugin_kinds(State(state): State<ApiState>) -> ApiResult<Json<ApiEnvelo
     }))
 }
 
+async fn plugin_metadata(
+    State(state): State<ApiState>,
+    Json(payload): Json<PluginMetadataRequest>,
+) -> ApiResult<Json<ApiEnvelope<PluginMetadataResponse>>> {
+    let metadata = state
+        .plugin_manager()
+        .metadata(&payload.name)
+        .await
+        .map_err(|error| ApiError::ProtocolSend(error.to_string()))?;
+
+    Ok(Json(ApiEnvelope {
+        status: String::from("ok"),
+        retcode: 0,
+        data: PluginMetadataResponse { metadata },
+        message: None,
+    }))
+}
+
+async fn plugin_status(State(state): State<ApiState>) -> ApiResult<Json<ApiEnvelope<PluginStatusResponse>>> {
+    let plugins = state.plugin_manager().list().await;
+    let running = state.is_runtime_running().await;
+    Ok(Json(ApiEnvelope {
+        status: String::from("ok"),
+        retcode: 0,
+        data: PluginStatusResponse {
+            running,
+            plugin_count: plugins.len(),
+        },
+        message: None,
+    }))
+}
+
 async fn listen_messages(
     State(state): State<ApiState>,
     Query(query): Query<ListenQuery>,
@@ -1094,6 +1148,36 @@ mod tests {
             .await
             .expect("list request should pass");
         assert_eq!(list_response.status(), StatusCode::OK);
+
+        let metadata_payload = serde_json::to_string(&PluginMetadataRequest {
+            name: String::from("test-plugin"),
+        })
+        .expect("payload serialize");
+        let metadata_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/plugin/metadata")
+                    .header("content-type", "application/json")
+                    .body(Body::from(metadata_payload))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("metadata request should pass");
+        assert_eq!(metadata_response.status(), StatusCode::OK);
+
+        let status_response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/plugin/status")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("status request should pass");
+        assert_eq!(status_response.status(), StatusCode::OK);
 
         let unload_payload = serde_json::to_string(&PluginUnloadRequest {
             name: String::from("test-plugin"),
