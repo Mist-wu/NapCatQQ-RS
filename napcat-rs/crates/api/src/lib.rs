@@ -294,8 +294,10 @@ struct ListenQuery {
     limit: Option<usize>,
     /// Filter by OneBot event type (comma-separated).
     #[serde(rename = "type")]
-    #[serde(alias = "types")]
     type_filter: Option<String>,
+    /// Compatibility alias for `type`.
+    #[serde(rename = "types")]
+    types_filter: Option<String>,
     /// Compatibility alias for `type`.
     post_type: Option<String>,
 }
@@ -1105,6 +1107,13 @@ fn onebot_event_payload(event: &ProtocolEvent) -> ProtocolResult<String> {
 fn parse_event_types(query: &ListenQuery) -> Option<HashSet<String>> {
     if let Some(raw_type_filter) = query.type_filter.as_ref() {
         let types = parse_event_type_list(raw_type_filter);
+        if !types.is_empty() {
+            return Some(types);
+        }
+    }
+
+    if let Some(raw_types_filter) = query.types_filter.as_ref() {
+        let types = parse_event_type_list(raw_types_filter);
         if !types.is_empty() {
             return Some(types);
         }
@@ -2011,6 +2020,106 @@ mod tests {
             serde_json::from_slice(&body).expect("get_events payload");
         let data = envelope["data"].as_array().expect("event list");
         assert_eq!(data.len(), 1);
+        let event = serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
+            .expect("event json parse");
+        assert_eq!(event["post_type"], "message");
+    }
+
+    #[tokio::test]
+    async fn api_get_events_route_types_alias_takes_precedence_over_post_type() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+
+        state
+            .emit_event(ProtocolEvent::Connected {
+                endpoint: String::from("mock://endpoint"),
+            })
+            .await
+            .expect("emit meta event");
+        state
+            .emit_event(ProtocolEvent::MessageReceived {
+                message: NapMessage::text(
+                    "msg-filter-alias-priority",
+                    "sender",
+                    MessageRecipient::Private {
+                        user_id: "u-1".to_string(),
+                    },
+                    "hello",
+                ),
+            })
+            .await
+            .expect("emit message event");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/get_events?types=message&post_type=meta_event&timeout_ms=50&max_events=8")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("get_events request should pass");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 2048)
+            .await
+            .expect("get_events body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("get_events payload");
+        let data = envelope["data"].as_array().expect("event list");
+        assert_eq!(data.len(), 1);
+
+        let event = serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
+            .expect("event json parse");
+        assert_eq!(event["post_type"], "message");
+    }
+
+    #[tokio::test]
+    async fn api_get_events_route_type_takes_precedence_over_types_alias() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+
+        state
+            .emit_event(ProtocolEvent::Connected {
+                endpoint: String::from("mock://endpoint"),
+            })
+            .await
+            .expect("emit meta event");
+        state
+            .emit_event(ProtocolEvent::MessageReceived {
+                message: NapMessage::text(
+                    "msg-filter-type-vs-types",
+                    "sender",
+                    MessageRecipient::Private {
+                        user_id: "u-1".to_string(),
+                    },
+                    "hello",
+                ),
+            })
+            .await
+            .expect("emit message event");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/get_events?type=message&types=meta_event&timeout_ms=50&max_events=8")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("get_events request should pass");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 2048)
+            .await
+            .expect("get_events body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("get_events payload");
+        let data = envelope["data"].as_array().expect("event list");
+        assert_eq!(data.len(), 1);
+
         let event = serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
             .expect("event json parse");
         assert_eq!(event["post_type"], "message");
