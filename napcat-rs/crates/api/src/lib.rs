@@ -437,7 +437,7 @@ impl ApiState {
             .route("/send_group_msg", post(send_group_msg))
             .route("/delete_msg", post(delete_msg))
             .route("/get_group_info", post(get_group_info))
-            .route("/get_group_list", get(list_groups))
+            .route("/get_group_list", get(list_group_list))
             .route("/get_friend_list", get(get_friend_list))
             .route("/message/listen", get(listen_messages))
             .route("/get_events", get(listen_messages))
@@ -635,6 +635,27 @@ async fn list_groups(State(state): State<ApiState>) -> Json<ApiEnvelope<Vec<Grou
         } else {
             groups.as_ref().clone()
         },
+        message: None,
+    })
+}
+
+async fn list_group_list(
+    State(state): State<ApiState>,
+) -> Json<ApiEnvelope<Vec<GroupInfoResponse>>> {
+    let groups = state.runtime_groups.read().await;
+    let expanded = if groups.as_ref().is_empty() {
+        compatibility_default_groups()
+    } else {
+        groups.as_ref().clone()
+    }
+    .into_iter()
+    .map(|group| group_info_from_cache(&group))
+    .collect::<Vec<_>>();
+
+    Json(ApiEnvelope {
+        status: String::from("ok"),
+        retcode: 0,
+        data: expanded,
         message: None,
     })
 }
@@ -1382,6 +1403,10 @@ mod tests {
             serde_json::from_slice(&body).expect("get_group_list payload");
         let data = envelope["data"].as_array().expect("groups array");
         assert!(!data.is_empty());
+        let first = &data[0];
+        assert!(first.get("group_id").is_some());
+        assert!(first.get("group_memo").is_some());
+        assert!(first.get("admin_flag").is_some());
     }
 
     #[tokio::test]
