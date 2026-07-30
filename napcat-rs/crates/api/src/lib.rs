@@ -571,13 +571,13 @@ async fn login_status(
     let online = state.is_runtime_running().await;
     Ok(Json(ApiEnvelope {
         status: String::from("ok"),
-        retcode: if online { 0 } else { -1 },
+        retcode: if online { 0 } else { 1201 },
         data: LoginStatusData {
             online,
             message: if online {
                 String::from("runtime running")
             } else {
-                String::from("runtime not started")
+                String::from("runtime not logged in")
             },
         },
         message: None,
@@ -587,7 +587,24 @@ async fn login_status(
 async fn get_status_compat(
     state: State<ApiState>,
 ) -> ApiResult<Json<ApiEnvelope<LoginStatusData>>> {
-    login_status(state).await
+    let online = state.is_runtime_running().await;
+    Ok(Json(ApiEnvelope {
+        status: if online { String::from("ok") } else { String::from("failed") },
+        retcode: if online { 0 } else { 1201 },
+        data: LoginStatusData {
+            online,
+            message: if online {
+                String::from("runtime running")
+            } else {
+                String::from("runtime not logged in")
+            },
+        },
+        message: if online {
+            None
+        } else {
+            Some(String::from("runtime not logged in"))
+        },
+    }))
 }
 
 async fn get_login_info(
@@ -614,7 +631,7 @@ async fn get_login_info(
         } else {
             String::from("failed")
         },
-        retcode: if online { 0 } else { -1 },
+        retcode: if online { 0 } else { 1201 },
         message: if online {
             None
         } else {
@@ -1276,6 +1293,38 @@ mod tests {
         assert_eq!(
             envelope["data"]["message"].as_str(),
             Some("runtime running")
+        );
+        assert_eq!(envelope["retcode"], 0);
+    }
+
+    #[tokio::test]
+    async fn api_status_route_reports_not_logged_in_state() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/get_status")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("request should pass");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024)
+            .await
+            .expect("get_status body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("get_status payload");
+        assert_eq!(envelope["status"], "failed");
+        assert_eq!(envelope["retcode"], 1201);
+        assert_eq!(envelope["data"]["online"].as_bool(), Some(false));
+        assert_eq!(
+            envelope["message"].as_str(),
+            Some("runtime not logged in")
         );
     }
 
