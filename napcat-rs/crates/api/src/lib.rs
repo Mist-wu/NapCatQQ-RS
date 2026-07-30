@@ -1799,6 +1799,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_get_group_info_rejects_unknown_group() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+        let payload = serde_json::to_string(&GetGroupInfoRequest {
+            group_id: String::from("missing-group"),
+            no_cache: false,
+        })
+        .expect("payload serialize");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/get_group_info")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("get_group_info request should pass");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 1024)
+            .await
+            .expect("get_group_info body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("get_group_info payload");
+        assert_eq!(envelope["status"], "failed");
+        assert_eq!(envelope["retcode"], -1);
+        assert_eq!(
+            envelope["message"].as_str(),
+            Some("group not found: missing-group")
+        );
+    }
+
+    #[tokio::test]
     async fn api_plugin_load_list_and_unload_works() {
         use std::path::PathBuf;
         let state = ApiState::new();
