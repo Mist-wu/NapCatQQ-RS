@@ -304,17 +304,37 @@ struct ListenQuery {
 #[derive(Debug)]
 pub enum ApiError {
     /// Bad client payload.
-    InvalidRequest(String),
+    InvalidRequest { retcode: i32, message: String },
     /// Event forwarding failed.
     EventDispatch(String),
     /// Protocol backend send failed.
     ProtocolSend(String),
 }
 
+impl ApiError {
+    const INVALID_REQUEST_RETCODE: i32 = -1;
+
+    fn invalid_request(message: impl Into<String>) -> Self {
+        Self::InvalidRequest {
+            retcode: Self::INVALID_REQUEST_RETCODE,
+            message: message.into(),
+        }
+    }
+
+    fn invalid_request_with_code(message: impl Into<String>, retcode: i32) -> Self {
+        Self::InvalidRequest {
+            retcode,
+            message: message.into(),
+        }
+    }
+}
+
 impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ApiError::InvalidRequest(message) => write!(f, "invalid request: {message}"),
+            ApiError::InvalidRequest { message, .. } => {
+                write!(f, "invalid request: {message}")
+            }
             ApiError::EventDispatch(message) => write!(f, "event dispatch failed: {message}"),
             ApiError::ProtocolSend(message) => write!(f, "protocol send failed: {message}"),
         }
@@ -325,15 +345,19 @@ impl std::error::Error for ApiError {}
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (code, message) = match self {
-            ApiError::InvalidRequest(message) => (StatusCode::BAD_REQUEST, message),
-            ApiError::EventDispatch(message) => (StatusCode::SERVICE_UNAVAILABLE, message),
-            ApiError::ProtocolSend(message) => (StatusCode::BAD_GATEWAY, message),
+        let (code, retcode, message) = match self {
+            ApiError::InvalidRequest { retcode, message } => {
+                (StatusCode::BAD_REQUEST, retcode, message)
+            }
+            ApiError::EventDispatch(message) => {
+                (StatusCode::SERVICE_UNAVAILABLE, -1, message)
+            }
+            ApiError::ProtocolSend(message) => (StatusCode::BAD_GATEWAY, -1, message),
         };
 
         let payload = ApiEnvelope {
             status: String::from("failed"),
-            retcode: -1,
+            retcode,
             data: EmptyData,
             message: Some(message),
         };
@@ -706,7 +730,7 @@ async fn send_msg_compat(
     Json(payload): Json<CompatSendRequest>,
 ) -> ApiResult<Json<ApiEnvelope<SendResponse>>> {
     if payload.message.trim().is_empty() {
-        return Err(ApiError::InvalidRequest(String::from(
+        return Err(ApiError::invalid_request(String::from(
             "message cannot be empty",
         )));
     }
@@ -719,7 +743,7 @@ async fn send_private_msg(
     Json(payload): Json<SendPrivateRequest>,
 ) -> ApiResult<Json<ApiEnvelope<SendResponse>>> {
     if payload.message.trim().is_empty() {
-        return Err(ApiError::InvalidRequest(String::from(
+        return Err(ApiError::invalid_request(String::from(
             "message cannot be empty",
         )));
     }
@@ -738,7 +762,7 @@ async fn send_group_msg(
     Json(payload): Json<SendGroupRequest>,
 ) -> ApiResult<Json<ApiEnvelope<SendResponse>>> {
     if payload.message.trim().is_empty() {
-        return Err(ApiError::InvalidRequest(String::from(
+        return Err(ApiError::invalid_request(String::from(
             "message cannot be empty",
         )));
     }
@@ -757,9 +781,10 @@ async fn delete_msg(
     Json(payload): Json<DeleteMsgRequest>,
 ) -> ApiResult<Json<ApiEnvelope<DeleteMsgResponse>>> {
     if payload.message_id.trim().is_empty() {
-        return Err(ApiError::InvalidRequest(String::from(
-            "message_id is required",
-        )));
+        return Err(ApiError::invalid_request_with_code(
+            String::from("message_id is required"),
+            ApiError::INVALID_REQUEST_RETCODE,
+        ));
     }
 
     state
@@ -784,7 +809,7 @@ async fn get_group_info(
 ) -> ApiResult<Json<ApiEnvelope<GroupInfoResponse>>> {
     let requested_group_id = payload.group_id.trim().to_string();
     if requested_group_id.is_empty() {
-        return Err(ApiError::InvalidRequest(String::from(
+        return Err(ApiError::invalid_request(String::from(
             "group_id is required",
         )));
     }
@@ -815,7 +840,7 @@ async fn get_group_info(
         }));
     }
 
-    Err(ApiError::InvalidRequest(format!(
+    Err(ApiError::invalid_request(format!(
         "group not found: {requested_group_id}"
     )))
 }
@@ -1119,10 +1144,10 @@ async fn push_send_event(
 fn validate_message(message: &NapMessage) -> ApiResult<()> {
     match &message.recipient {
         MessageRecipient::Private { user_id } if user_id.is_empty() => Err(
-            ApiError::InvalidRequest(String::from("private user_id cannot be empty")),
+            ApiError::invalid_request(String::from("private user_id cannot be empty")),
         ),
         MessageRecipient::Group { group_id } if group_id.is_empty() => Err(
-            ApiError::InvalidRequest(String::from("group_id cannot be empty")),
+            ApiError::invalid_request(String::from("group_id cannot be empty")),
         ),
         _ => Ok(()),
     }
@@ -1130,7 +1155,7 @@ fn validate_message(message: &NapMessage) -> ApiResult<()> {
 
 fn validate_message_payload(message: &NapMessage) -> ApiResult<()> {
     if message.elements.is_empty() {
-        Err(ApiError::InvalidRequest(String::from(
+        Err(ApiError::invalid_request(String::from(
             "message payload cannot be empty",
         )))
     } else {
@@ -1141,7 +1166,7 @@ fn validate_message_payload(message: &NapMessage) -> ApiResult<()> {
 impl CompatSendRequest {
     fn into_napcat_message(self) -> ApiResult<NapMessage> {
         if self.message.trim().is_empty() {
-            return Err(ApiError::InvalidRequest(String::from(
+            return Err(ApiError::invalid_request(String::from(
                 "message cannot be empty",
             )));
         }
@@ -1150,7 +1175,7 @@ impl CompatSendRequest {
             MessageType::Private => {
                 let user_id = self.user_id.unwrap_or_default();
                 if user_id.is_empty() {
-                    return Err(ApiError::InvalidRequest(String::from(
+                    return Err(ApiError::invalid_request(String::from(
                         "user_id is required for private messages",
                     )));
                 }
@@ -1159,7 +1184,7 @@ impl CompatSendRequest {
             MessageType::Group => {
                 let group_id = self.group_id.unwrap_or_default();
                 if group_id.is_empty() {
-                    return Err(ApiError::InvalidRequest(String::from(
+                    return Err(ApiError::invalid_request(String::from(
                         "group_id is required for group messages",
                     )));
                 }
@@ -1476,6 +1501,75 @@ mod tests {
             .expect("request should pass");
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn api_send_route_rejects_empty_message_payload() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+        let payload = serde_json::to_string(&SendRequest {
+            message: NapMessage {
+                id: String::from("msg-empty"),
+                sender_id: String::from("sender"),
+                recipient: MessageRecipient::Private {
+                    user_id: String::from("u1"),
+                },
+                elements: vec![],
+            },
+        })
+        .expect("payload serialize");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/message/send")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("request should pass");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 1024)
+            .await
+            .expect("send request body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("send request payload");
+        assert_eq!(envelope["status"], "failed");
+        assert_eq!(envelope["retcode"], -1);
+    }
+
+    #[tokio::test]
+    async fn api_delete_msg_rejects_empty_message_id() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+        let payload = serde_json::to_string(&DeleteMsgRequest {
+            message_id: "  ".to_string(),
+        })
+        .expect("payload serialize");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/delete_msg")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("request should pass");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 1024)
+            .await
+            .expect("delete msg body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("delete msg payload");
+        assert_eq!(envelope["status"], "failed");
+        assert_eq!(envelope["retcode"], -1);
     }
 
     #[tokio::test]
