@@ -2213,6 +2213,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_get_events_route_filters_by_post_type_list() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+
+        state
+            .emit_event(ProtocolEvent::Connected {
+                endpoint: String::from("mock://endpoint"),
+            })
+            .await
+            .expect("emit meta event");
+        state
+            .emit_event(ProtocolEvent::MessageReceived {
+                message: NapMessage::text(
+                    "msg-filter-3",
+                    "sender",
+                    MessageRecipient::Private {
+                        user_id: "u-1".to_string(),
+                    },
+                    "hello",
+                ),
+            })
+            .await
+            .expect("emit message event");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/get_events?post_type=message,%20meta_event&timeout_ms=50&max_events=8")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("get_events request should pass");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 2048)
+            .await
+            .expect("get_events body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("get_events payload");
+        let data = envelope["data"].as_array().expect("event list");
+        assert_eq!(data.len(), 2);
+
+        let post_types = data
+            .iter()
+            .map(|entry| {
+                let event = serde_json::from_str::<serde_json::Value>(entry.as_str().expect("event body"))
+                    .expect("event json parse");
+                event["post_type"].as_str().map(ToString::to_string)
+            })
+            .collect::<Vec<_>>();
+
+        assert!(post_types.contains(&Some(String::from("message"))));
+        assert!(post_types.contains(&Some(String::from("meta_event")));
+    }
+
+    #[tokio::test]
     async fn api_get_friend_list_exposes_compatibility_remark_field() {
         let state = ApiState::new();
         let app = state.clone().router();
