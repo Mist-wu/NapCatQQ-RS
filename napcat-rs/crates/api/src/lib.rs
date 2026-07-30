@@ -864,13 +864,27 @@ async fn listen_messages(
     })
 }
 
-async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<ApiState>) -> impl IntoResponse {
-    ws.on_upgrade(|socket| ws_handler(socket, state))
+async fn ws_upgrade(
+    ws: WebSocketUpgrade,
+    State(state): State<ApiState>,
+    Query(query): Query<ListenQuery>,
+) -> impl IntoResponse {
+    let event_types = parse_event_types(&query);
+    ws.on_upgrade(move |socket| ws_handler(socket, state, event_types))
 }
 
-async fn ws_handler(mut socket: WebSocket, state: ApiState) {
+async fn ws_handler(
+    mut socket: WebSocket,
+    state: ApiState,
+    event_types: Option<HashSet<String>>,
+) {
     let mut rx = state.events.subscribe();
     while let Ok(envelope) = rx.recv().await {
+        if let Some(accepted_types) = &event_types
+            && !accepted_types.contains(onebot_event_post_type(&envelope.payload))
+        {
+            continue;
+        }
         if let Ok(serialized) = onebot_event_payload(&envelope.payload)
             && socket.send(Message::Text(serialized.into())).await.is_err()
         {
