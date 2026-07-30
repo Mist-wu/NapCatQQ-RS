@@ -210,10 +210,18 @@ pub struct GroupInfoResponse {
     pub group_id: String,
     /// Group display name.
     pub group_name: String,
+    /// Optional group remark/memo.
+    pub group_memo: String,
+    /// Group creation epoch timestamp.
+    pub group_create_time: u64,
+    /// Group level label.
+    pub group_level: String,
     /// Estimated member count.
     pub member_count: usize,
     /// Capacity value for compatibility with OneBot-like response shape.
     pub max_member_count: usize,
+    /// Whether current account has admin privilege.
+    pub admin_flag: bool,
 }
 
 /// Generic message send request.
@@ -535,6 +543,19 @@ fn message_id_from_text(message: &str) -> String {
     format!("api-{message_len}", message_len = message.len())
 }
 
+fn group_info_from_cache(group: &GroupInfo) -> GroupInfoResponse {
+    GroupInfoResponse {
+        group_id: group.group_id.clone(),
+        group_name: group.group_name.clone(),
+        group_memo: String::from(""),
+        group_create_time: 0,
+        group_level: String::from("owner"),
+        member_count: 0,
+        max_member_count: 200,
+        admin_flag: true,
+    }
+}
+
 async fn health_check() -> Json<ApiEnvelope<EmptyData>> {
     Json(ApiEnvelope {
         status: String::from("ok"),
@@ -735,12 +756,7 @@ async fn get_group_info(
         return Ok(Json(ApiEnvelope {
             status: String::from("ok"),
             retcode: 0,
-            data: GroupInfoResponse {
-                group_id: group.group_id.clone(),
-                group_name: group.group_name.clone(),
-                member_count: 0,
-                max_member_count: 200,
-            },
+            data: group_info_from_cache(group),
             message: None,
         }));
     }
@@ -1446,6 +1462,48 @@ mod tests {
         let first = envelope["data"][0].clone();
         assert_eq!(first["user_id"].as_str(), Some("u1"));
         assert!(first.get("remark").is_some());
+    }
+
+    #[tokio::test]
+    async fn api_get_group_info_includes_extended_fields() {
+        let state = ApiState::new();
+        state
+            .set_groups(vec![GroupInfo {
+                group_id: String::from("test-group"),
+                group_name: String::from("test-name"),
+            }])
+            .await;
+        let app = state.clone().router();
+        let payload = serde_json::to_string(&GetGroupInfoRequest {
+            group_id: String::from("test-group"),
+            no_cache: false,
+        })
+        .expect("payload serialize");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/get_group_info")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("get_group_info request should pass");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 2048)
+            .await
+            .expect("get_group_info body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("get_group_info payload");
+        let data = envelope["data"].as_object().expect("group info object");
+        assert_eq!(data["group_id"], "test-group");
+        assert_eq!(data["group_name"], "test-name");
+        assert!(data.get("group_memo").is_some());
+        assert!(data.get("group_create_time").is_some());
+        assert!(data.get("admin_flag").is_some());
     }
 
     #[tokio::test]
