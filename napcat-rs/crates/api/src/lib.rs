@@ -110,6 +110,17 @@ pub struct UserInfo {
     pub nickname: String,
 }
 
+/// OneBot-compatible friend payload.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct FriendInfo {
+    /// User id.
+    pub user_id: String,
+    /// Friend display name.
+    pub nickname: String,
+    /// Optional remark set by current account.
+    pub remark: String,
+}
+
 /// Delete message request payload.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DeleteMsgRequest {
@@ -494,6 +505,32 @@ fn compatibility_default_users() -> Vec<UserInfo> {
     ]
 }
 
+fn compatibility_default_friends() -> Vec<FriendInfo> {
+    vec![
+        FriendInfo {
+            user_id: String::from("u1"),
+            nickname: String::from("alice"),
+            remark: String::from(""),
+        },
+        FriendInfo {
+            user_id: String::from("u2"),
+            nickname: String::from("bob"),
+            remark: String::from(""),
+        },
+    ]
+}
+
+fn friend_payload_from_users(users: Vec<UserInfo>) -> Vec<FriendInfo> {
+    users
+        .into_iter()
+        .map(|user| FriendInfo {
+            user_id: user.user_id,
+            nickname: user.nickname,
+            remark: String::new(),
+        })
+        .collect()
+}
+
 fn message_id_from_text(message: &str) -> String {
     format!("api-{message_len}", message_len = message.len())
 }
@@ -715,12 +752,12 @@ async fn get_group_info(
 
 async fn get_friend_list(
     State(state): State<ApiState>,
-) -> ApiResult<Json<ApiEnvelope<Vec<UserInfo>>>> {
+) -> ApiResult<Json<ApiEnvelope<Vec<FriendInfo>>>> {
     let friends = state.users().await;
     let payload = if friends.is_empty() {
-        compatibility_default_users()
+        compatibility_default_friends()
     } else {
-        friends
+        friend_payload_from_users(friends)
     };
 
     Ok(Json(ApiEnvelope {
@@ -1382,6 +1419,33 @@ mod tests {
             serde_json::from_slice(&body).expect("get_events payload");
         let data = envelope["data"].as_array().expect("event list");
         assert_eq!(data.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn api_get_friend_list_exposes_compatibility_remark_field() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/get_friend_list")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("get_friend_list request should pass");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024)
+            .await
+            .expect("get_friend_list body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("get_friend_list payload");
+        let first = envelope["data"][0].clone();
+        assert_eq!(first["user_id"].as_str(), Some("u1"));
+        assert!(first.get("remark").is_some());
     }
 
     #[tokio::test]
