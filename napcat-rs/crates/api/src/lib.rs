@@ -723,6 +723,14 @@ async fn send_message(
     let mut message = payload.message;
     message.id = message.id.trim().to_string();
     message.sender_id = message.sender_id.trim().to_string();
+    message.recipient = match message.recipient {
+        MessageRecipient::Private { user_id } => MessageRecipient::Private {
+            user_id: user_id.trim().to_string(),
+        },
+        MessageRecipient::Group { group_id } => MessageRecipient::Group {
+            group_id: group_id.trim().to_string(),
+        },
+    };
 
     validate_message_payload(&message)?;
     validate_message(&message)?;
@@ -1159,7 +1167,13 @@ fn validate_message(message: &NapMessage) -> ApiResult<()> {
 }
 
 fn validate_message_payload(message: &NapMessage) -> ApiResult<()> {
-    if message.elements.is_empty() {
+    if message.id.trim().is_empty() {
+        Err(ApiError::invalid_request(String::from("message id cannot be empty")))
+    } else if message.sender_id.trim().is_empty() {
+        Err(ApiError::invalid_request(String::from(
+            "sender_id cannot be empty",
+        )))
+    } else if message.elements.is_empty() {
         Err(ApiError::invalid_request(String::from(
             "message payload cannot be empty",
         )))
@@ -1616,6 +1630,155 @@ mod tests {
             serde_json::from_slice(&body).expect("send request payload");
         assert_eq!(envelope["status"], "failed");
         assert_eq!(envelope["retcode"], -1);
+    }
+
+    #[tokio::test]
+    async fn api_send_route_rejects_empty_message_id() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+        let payload = serde_json::to_string(&SendRequest {
+            message: NapMessage {
+                id: String::from("   "),
+                sender_id: String::from("sender"),
+                recipient: MessageRecipient::Private {
+                    user_id: String::from("u1"),
+                },
+                elements: vec![napcat_message::MessageElement::Text {
+                    text: String::from("hello"),
+                }],
+            },
+        })
+        .expect("payload serialize");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/message/send")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("request should pass");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 1024)
+            .await
+            .expect("send request body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("send request payload");
+        assert_eq!(envelope["status"], "failed");
+        assert_eq!(envelope["retcode"], -1);
+        assert_eq!(envelope["message"].as_str(), Some("message id cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn api_send_route_rejects_empty_sender_id() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+        let payload = serde_json::to_string(&SendRequest {
+            message: NapMessage {
+                id: String::from("msg-1"),
+                sender_id: String::from("   "),
+                recipient: MessageRecipient::Private {
+                    user_id: String::from("u1"),
+                },
+                elements: vec![napcat_message::MessageElement::Text {
+                    text: String::from("hello"),
+                }],
+            },
+        })
+        .expect("payload serialize");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/message/send")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("request should pass");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 1024)
+            .await
+            .expect("send request body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("send request payload");
+        assert_eq!(envelope["status"], "failed");
+        assert_eq!(envelope["retcode"], -1);
+        assert_eq!(
+            envelope["message"].as_str(),
+            Some("sender_id cannot be empty")
+        );
+    }
+
+    #[tokio::test]
+    async fn api_send_route_trims_recipient_ids() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+        let payload = serde_json::to_string(&SendRequest {
+            message: NapMessage {
+                id: String::from(" msg-2 "),
+                sender_id: String::from("sender"),
+                recipient: MessageRecipient::Private {
+                    user_id: String::from("  u2  "),
+                },
+                elements: vec![napcat_message::MessageElement::Text {
+                    text: String::from("hello"),
+                }],
+            },
+        })
+        .expect("payload serialize");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/message/send")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("request should pass");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024)
+            .await
+            .expect("send request body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("send request payload");
+        assert_eq!(envelope["data"]["message_id"], "msg-2");
+
+        let event_response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/get_events?timeout_ms=200&max_events=1")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("get_events request should pass");
+
+        let event_body = to_bytes(event_response.into_body(), 1024)
+            .await
+            .expect("get_events body");
+        let event_envelope: serde_json::Value =
+            serde_json::from_slice(&event_body).expect("get events payload");
+        let event = serde_json::from_str::<serde_json::Value>(
+            event_envelope["data"][0]
+                .as_str()
+                .expect("event body"),
+        )
+        .expect("event json parse");
+        assert_eq!(event["user_id"], "sender");
+        assert_eq!(event["target_id"], "u2");
     }
 
     #[tokio::test]
