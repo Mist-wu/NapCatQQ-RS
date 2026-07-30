@@ -1,6 +1,11 @@
 //! Public HTTP and WebSocket API surface.
 
-use std::{fmt, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    fmt,
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use axum::{
     Json, Router,
@@ -18,7 +23,7 @@ use napcat_plugin::{
     PluginBackendKind, PluginDefinition, PluginEvent, PluginManager, PluginMetadata,
 };
 use napcat_protocol::{
-    ProtocolBackend, ProtocolError, ProtocolEvent, ProtocolResult, serialize_event,
+    ProtocolBackend, ProtocolError, ProtocolEvent, ProtocolResult,
 };
 use serde::{Deserialize, Serialize};
 use tokio::{
@@ -822,7 +827,7 @@ async fn listen_messages(
         match event_result {
             Ok(Ok(envelope)) => {
                 let event = envelope.payload;
-                if let Ok(serialized) = serialize_event(&event) {
+                if let Ok(serialized) = onebot_event_payload(&event) {
                     records.push(serialized);
                 }
             }
@@ -847,12 +852,75 @@ async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<ApiState>) -> impl
 async fn ws_handler(mut socket: WebSocket, state: ApiState) {
     let mut rx = state.events.subscribe();
     while let Ok(envelope) = rx.recv().await {
-        if let Ok(serialized) = serialize_event(&envelope.payload)
+        if let Ok(serialized) = onebot_event_payload(&envelope.payload)
             && socket.send(Message::Text(serialized.into())).await.is_err()
         {
             break;
         }
     }
+}
+
+fn onebot_event_payload(event: &ProtocolEvent) -> ProtocolResult<String> {
+    let time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| ProtocolError::Transport(error.to_string()))?
+        .as_secs();
+
+    let payload = match event {
+        ProtocolEvent::MessageReceived { message } => {
+            let (message_type, sub_type, target_id) = match &message.recipient {
+                MessageRecipient::Private { user_id } => ("private", "friend", user_id.as_str()),
+                MessageRecipient::Group { group_id } => ("group", "normal", group_id.as_str()),
+            };
+
+            serde_json::json!({
+                "post_type": "message",
+                "time": time,
+                "self_id": "napcat-bot",
+                "message_type": message_type,
+                "sub_type": sub_type,
+                "message_id": message.id,
+                "group_id": match &message.recipient {
+                    MessageRecipient::Group { group_id } => Some(group_id.as_str()),
+                    MessageRecipient::Private { .. } => None,
+                },
+                "user_id": message.sender_id,
+                "sender": {
+                    "user_id": message.sender_id,
+                },
+                "target_id": target_id,
+                "message": message.elements,
+            })
+        }
+        ProtocolEvent::Connected { endpoint } => serde_json::json!({
+            "post_type": "meta_event",
+            "time": time,
+            "self_id": "napcat-bot",
+            "meta_event_type": "lifecycle",
+            "sub_type": "connected",
+            "endpoint": endpoint,
+            "status": "ok",
+        }),
+        ProtocolEvent::Disconnected => serde_json::json!({
+            "post_type": "meta_event",
+            "time": time,
+            "self_id": "napcat-bot",
+            "meta_event_type": "lifecycle",
+            "sub_type": "disconnected",
+            "status": "close",
+        }),
+        ProtocolEvent::Warning { message } => serde_json::json!({
+            "post_type": "meta_event",
+            "time": time,
+            "self_id": "napcat-bot",
+            "meta_event_type": "warning",
+            "sub_type": "protocol_warning",
+            "message": message,
+            "status": "warn",
+        }),
+    };
+
+    serde_json::to_string(&payload).map_err(|error| ProtocolError::Serialization(error.to_string()))
 }
 
 async fn push_send_event(
@@ -1195,6 +1263,27 @@ mod tests {
             .await
             .expect("unload request should pass");
         assert_eq!(unload_response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn api_onebot_event_payload_from_message_event() {
+        let message = napcat_message::Message::text(
+            "msg-1",
+            "sender-1",
+            napcat_message::MessageRecipient::Group {
+                group_id: String::from("group-1"),
+            },
+            "hello",
+        );
+        let payload =
+            onebot_event_payload(&ProtocolEvent::MessageReceived { message }).expect("event payload");
+        let parsed: serde_json::Value = serde_json::from_str(&payload).expect("json payload");
+
+        assert_eq!(parsed["post_type"], "message");
+        assert_eq!(parsed["message_type"], "group");
+        assert_eq!(parsed["message_id"], "msg-1");
+        assert_eq!(parsed["group_id"], "group-1");
+        assert_eq!(parsed["user_id"], "sender-1");
     }
 
     #[tokio::test]
