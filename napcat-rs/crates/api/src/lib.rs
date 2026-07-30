@@ -1968,6 +1968,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_get_events_route_filters_by_types_alias() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+
+        state
+            .emit_event(ProtocolEvent::Connected {
+                endpoint: String::from("mock://endpoint"),
+            })
+            .await
+            .expect("emit meta event");
+        state
+            .emit_event(ProtocolEvent::MessageReceived {
+                message: NapMessage::text(
+                    "msg-filter-alias",
+                    "sender",
+                    MessageRecipient::Private {
+                        user_id: "u-1".to_string(),
+                    },
+                    "hello",
+                ),
+            })
+            .await
+            .expect("emit message event");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/get_events?types=message&max_events=8&timeout_ms=50")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("get_events request should pass");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 2048)
+            .await
+            .expect("get_events body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("get_events payload");
+        let data = envelope["data"].as_array().expect("event list");
+        assert_eq!(data.len(), 1);
+        let event = serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
+            .expect("event json parse");
+        assert_eq!(event["post_type"], "message");
+    }
+
+    #[tokio::test]
     async fn api_get_group_list_route_is_alias_of_groups() {
         let state = ApiState::new();
         let app = state.clone().router();
