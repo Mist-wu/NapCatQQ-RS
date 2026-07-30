@@ -1103,19 +1103,29 @@ fn onebot_event_payload(event: &ProtocolEvent) -> ProtocolResult<String> {
 }
 
 fn parse_event_types(query: &ListenQuery) -> Option<HashSet<String>> {
-    let raw = query.type_filter.as_ref().or(query.post_type.as_ref())?;
+    if let Some(raw_type_filter) = query.type_filter.as_ref() {
+        let types = parse_event_type_list(raw_type_filter);
+        if !types.is_empty() {
+            return Some(types);
+        }
+    }
 
-    let types = raw
+    query.post_type.as_ref().and_then(|raw| {
+        let post_types = parse_event_type_list(raw);
+        if post_types.is_empty() {
+            None
+        } else {
+            Some(post_types)
+        }
+    })
+}
+
+fn parse_event_type_list(raw: &str) -> HashSet<String> {
+    raw
         .split(',')
         .map(|value| value.trim().to_lowercase())
         .filter(|value| !value.is_empty())
-        .collect::<HashSet<_>>();
-
-    if types.is_empty() {
-        None
-    } else {
-        Some(types)
-    }
+        .collect::<HashSet<_>>()
 }
 
 fn onebot_event_post_type(event: &ProtocolEvent) -> &'static str {
@@ -2148,6 +2158,58 @@ mod tests {
         let event = serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
             .expect("event json parse");
         assert_eq!(event["post_type"], "message");
+    }
+
+    #[tokio::test]
+    async fn api_get_events_route_falls_back_to_post_type_when_type_is_blank() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+
+        state
+            .emit_event(ProtocolEvent::Connected {
+                endpoint: String::from("mock://endpoint"),
+            })
+            .await
+            .expect("emit meta event");
+        state
+            .emit_event(ProtocolEvent::MessageReceived {
+                message: NapMessage::text(
+                    "msg-fallback",
+                    "sender",
+                    MessageRecipient::Private {
+                        user_id: "u-1".to_string(),
+                    },
+                    "hello",
+                ),
+            })
+            .await
+            .expect("emit message event");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(
+                        "/get_events?type=%20%20&post_type=meta_event&timeout_ms=50&max_events=8",
+                    )
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("get_events request should pass");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 2048)
+            .await
+            .expect("get_events body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("get_events payload");
+        let data = envelope["data"].as_array().expect("event list");
+        assert_eq!(data.len(), 1);
+
+        let event = serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
+            .expect("event json parse");
+        assert_eq!(event["post_type"], "meta_event");
     }
 
     #[tokio::test]
