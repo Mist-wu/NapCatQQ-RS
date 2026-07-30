@@ -2419,6 +2419,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_get_events_route_does_not_fallback_to_types_when_type_is_invalid() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+
+        state
+            .emit_event(ProtocolEvent::MessageReceived {
+                message: NapMessage::text(
+                    "msg-invalid-type-types",
+                    "sender",
+                    MessageRecipient::Private {
+                        user_id: "u-1".to_string(),
+                    },
+                    "hello",
+                ),
+            })
+            .await
+            .expect("emit message event");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/get_events?type=unknown&types=message&timeout_ms=50&max_events=8")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("get_events request should pass");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 2048)
+            .await
+            .expect("get_events body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("get_events payload");
+        let data = envelope["data"].as_array().expect("event list");
+        assert_eq!(data.len(), 0);
+    }
+
+    #[tokio::test]
     async fn api_get_events_route_filters_by_post_type_list() {
         let state = ApiState::new();
         let app = state.clone().router();
