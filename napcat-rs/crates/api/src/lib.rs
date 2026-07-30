@@ -1,6 +1,7 @@
 //! Public HTTP and WebSocket API surface.
 
 use std::{
+    collections::HashSet,
     fmt,
     net::SocketAddr,
     sync::Arc,
@@ -266,8 +267,16 @@ pub enum MessageType {
 struct ListenQuery {
     /// Poll timeout in milliseconds.
     timeout_ms: Option<u64>,
+    /// Poll timeout in seconds (compatibility alias).
+    timeout: Option<u64>,
     /// Max events to collect.
     max_events: Option<usize>,
+    /// Filter by OneBot event type (comma-separated).
+    #[serde(rename = "type")]
+    #[serde(alias = "types")]
+    type_filter: Option<String>,
+    /// Compatibility alias for `type`.
+    post_type: Option<String>,
 }
 
 /// API-level error.
@@ -818,9 +827,13 @@ async fn listen_messages(
     State(state): State<ApiState>,
     Query(query): Query<ListenQuery>,
 ) -> Json<ApiEnvelope<Vec<String>>> {
-    let timeout_ms = query.timeout_ms.unwrap_or(200);
+    let timeout_ms = query
+        .timeout_ms
+        .or_else(|| query.timeout.map(|value| value.saturating_mul(1000)))
+        .unwrap_or(200);
     let max_events = query.max_events.unwrap_or(8).clamp(1, 32);
     let mut rx = state.events.subscribe();
+    let event_types = parse_event_types(&query);
     let mut records = Vec::with_capacity(max_events);
 
     for _ in 0..max_events {
@@ -828,6 +841,9 @@ async fn listen_messages(
         match event_result {
             Ok(Ok(envelope)) => {
                 let event = envelope.payload;
+                if let Some(accepted_types) = &event_types && !accepted_types.contains(onebot_event_post_type(&event)) {
+                    continue;
+                }
                 if let Ok(serialized) = onebot_event_payload(&event) {
                     records.push(serialized);
                 }
@@ -922,6 +938,31 @@ fn onebot_event_payload(event: &ProtocolEvent) -> ProtocolResult<String> {
     };
 
     serde_json::to_string(&payload).map_err(|error| ProtocolError::Serialization(error.to_string()))
+}
+
+fn parse_event_types(query: &ListenQuery) -> Option<HashSet<String>> {
+    let raw = query.type_filter.as_ref().or(query.post_type.as_ref())?;
+
+    let types = raw
+        .split(',')
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect::<HashSet<_>>();
+
+    if types.is_empty() {
+        None
+    } else {
+        Some(types)
+    }
+}
+
+fn onebot_event_post_type(event: &ProtocolEvent) -> &'static str {
+    match event {
+        ProtocolEvent::MessageReceived { .. } => "message",
+        ProtocolEvent::Connected { .. } => "meta_event",
+        ProtocolEvent::Disconnected => "meta_event",
+        ProtocolEvent::Warning { .. } => "meta_event",
+    }
 }
 
 async fn push_send_event(
@@ -1196,6 +1237,55 @@ mod tests {
         let envelope: serde_json::Value =
             serde_json::from_slice(&body).expect("get_events payload");
         assert_eq!(envelope["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn api_get_events_route_filters_by_type() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+
+        state
+            .emit_event(ProtocolEvent::Connected {
+                endpoint: String::from("mock://endpoint"),
+            })
+            .await
+            .expect("emit meta event");
+        state
+            .emit_event(ProtocolEvent::MessageReceived {
+                message: NapMessage::text(
+                    "msg-filter",
+                    "sender",
+                    MessageRecipient::Private {
+                        user_id: "u-1".to_string(),
+                    },
+                    "hello",
+                ),
+            })
+            .await
+            .expect("emit message event");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/get_events?type=message&max_events=8&timeout_ms=50")
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("get_events request should pass");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 2048)
+            .await
+            .expect("get_events body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("get_events payload");
+        let data = envelope["data"].as_array().expect("event list");
+        assert_eq!(data.len(), 1);
+        let event = serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
+            .expect("event json parse");
+        assert_eq!(event["post_type"], "message");
     }
 
     #[tokio::test]
