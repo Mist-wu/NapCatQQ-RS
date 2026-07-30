@@ -780,7 +780,8 @@ async fn delete_msg(
     State(state): State<ApiState>,
     Json(payload): Json<DeleteMsgRequest>,
 ) -> ApiResult<Json<ApiEnvelope<DeleteMsgResponse>>> {
-    if payload.message_id.trim().is_empty() {
+    let message_id = payload.message_id.trim().to_string();
+    if message_id.is_empty() {
         return Err(ApiError::invalid_request_with_code(
             String::from("message_id is required"),
             ApiError::INVALID_REQUEST_RETCODE,
@@ -789,7 +790,7 @@ async fn delete_msg(
 
     state
         .emit_event(ProtocolEvent::Warning {
-            message: format!("delete message requested: {}", payload.message_id),
+            message: format!("delete message requested: {}", message_id),
         })
         .await?;
 
@@ -797,7 +798,7 @@ async fn delete_msg(
         status: String::from("ok"),
         retcode: 0,
         data: DeleteMsgResponse {
-            message_id: payload.message_id,
+            message_id,
         },
         message: None,
     }))
@@ -1642,6 +1643,37 @@ mod tests {
             serde_json::from_slice(&body).expect("delete msg payload");
         assert_eq!(envelope["status"], "failed");
         assert_eq!(envelope["retcode"], -1);
+    }
+
+    #[tokio::test]
+    async fn api_delete_msg_trims_message_id() {
+        let state = ApiState::new();
+        let app = state.clone().router();
+        let payload = serde_json::to_string(&DeleteMsgRequest {
+            message_id: "  m-1 \n ".to_string(),
+        })
+        .expect("payload serialize");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/delete_msg")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("request should pass");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024)
+            .await
+            .expect("delete msg body");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("delete msg payload");
+        assert_eq!(envelope["status"], "ok");
+        assert_eq!(envelope["data"]["message_id"], "m-1");
     }
 
     #[tokio::test]
