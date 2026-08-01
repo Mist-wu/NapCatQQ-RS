@@ -24,6 +24,8 @@ jobs:
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: napcat-rs -> target
 
       - name: Check formatting
         run: cargo fmt --all -- --check
