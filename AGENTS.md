@@ -1,8 +1,8 @@
 # NapCatQQ-RS Agent Instructions
 
-本文件适用于本仓库中的所有开发、版本管理、构建、测试和部署工作。
+本仓库按标准 Rust workspace 项目方式开发。默认在本机完成开发、构建和测试，通过 GitHub CI 做持续验证，并在需要时使用云服务器完成部署及真实 QQ/E2E 验证。
 
-## 执行环境边界
+## 开发环境
 
 开发机为当前 Mac，运行服务器为：
 
@@ -10,12 +10,10 @@
 root@152.42.241.53
 ```
 
-必须严格遵守以下边界：
-
-- 在本机执行：代码阅读、代码编辑、文档编写、依赖安装、Cargo 构建/检查/测试/基准测试、程序运行、`git add`、`git commit`、`git push` 和 `gh` 仓库管理。
-- 在服务器执行：`git pull`、Linux 环境构建与测试、部署运行、真实 QQ 登录和 E2E 验证。
-- 允许在本机执行 `cargo build`、`cargo check`、`cargo test`、`cargo bench`、`cargo fmt --check`、`cargo clippy` 和运行 NapCatQQ-RS。
-- 禁止直接在服务器编辑项目源代码或创建提交；服务器工作区只用于拉取并验证本机已经推送的提交。
+- 本机是主要开发环境，可进行代码编辑、依赖安装、构建、测试、benchmark、运行和 Git/GitHub 操作。
+- GitHub Actions 是统一的持续集成环境。
+- 云服务器用于 Linux 部署验证、长期运行、真实 QQ 登录和 E2E 测试，也可用于问题复现和性能测试。
+- 如确需在服务器修复环境相关问题，应将修改正常提交回 Git 仓库，避免服务器出现不可追踪的长期差异。
 - 不得把密码、令牌、QQ 凭据、Cookie、设备信息或其他秘密写入仓库、提交记录、日志和文档。
 
 ## 服务器连接与工作目录
@@ -32,7 +30,7 @@ ssh root@152.42.241.53
 /root/projects/NapCatQQ-RS
 ```
 
-首次使用服务器时检查：
+需要使用服务器时检查：
 
 ```bash
 rustc --version
@@ -48,7 +46,7 @@ cd /root/projects/NapCatQQ-RS
 git pull --ff-only origin main
 ```
 
-SSH 不可达、服务器依赖安装失败或服务器验证没有执行时，必须明确标记为阻塞或未验证，不得声称任务、阶段或目标已经完成。
+仅当交付内容要求服务器部署或真实 QQ/E2E 验证时，SSH 不可达才构成对应验证的阻塞；普通 Rust 单元开发可继续进行。
 
 ## GitHub 与版本管理
 
@@ -57,23 +55,20 @@ SSH 不可达、服务器依赖安装失败或服务器验证没有执行时，�
 - 默认分支为 `main`，远程仓库为公开仓库 `NapCatQQ-RS`。
 - 每个提交只能包含一个清晰、可独立回滚的目的。
 - 提交信息使用 Conventional Commits，例如 `feat(core): implement runtime shutdown`。
-- 每完成一个独立步骤，先更新 `CHANGELOG.md`，再在本机执行 `git add`、`git commit` 和 `git push origin main`。
-- 推送后服务器执行 `git pull --ff-only origin main`，再完成该提交对应的格式、静态检查、构建和测试。
+- 面向用户的功能、修复和兼容性变化应更新 `CHANGELOG.md`；纯内部重构可按实际影响判断。
+- 推送后由 GitHub Actions 执行标准检查；涉及部署、QQ 协议或平台差异时再同步服务器验证。
 - 验证失败时，用独立的修复提交处理；不得把多个无关修复压入同一个提交。
 - 不得覆盖、重置或删除用户已有的未提交改动。
 
-## 每步工作流
+## 标准开发流程
 
-1. 在本机查看当前代码状态和相关文件。
-2. 在本机完成单一目的的代码或文档修改。
-3. 在本机执行该步骤需要的格式检查、Clippy、构建、测试、基准测试或运行验证。
-4. 在本机更新 `CHANGELOG.md`。
-5. 在本机提交并推送到 GitHub。
-6. SSH 登录服务器并进入 `/root/projects/NapCatQQ-RS`。
-7. 在服务器执行 `git pull --ff-only origin main`。
-8. 在服务器执行 Linux 环境所需的格式检查、Clippy、构建和测试。
-9. 涉及 QQ 协议、登录、消息或 OneBot API 时，在服务器完成真实 QQ/E2E 验证。
-10. 若任一环境验证失败，回到本机修改并创建单一目的修复提交，然后重复上述流程。
+1. 查看工作区状态并阅读相关代码。
+2. 完成单一目的的修改和对应测试。
+3. 在 workspace 根目录依次运行 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings` 和 `cargo test --workspace --all-targets`。
+4. 需要发布可执行文件时运行 `cargo build --workspace --release`；性能相关修改运行对应 benchmark。
+5. 按实际影响更新文档和 `CHANGELOG.md`。
+6. 创建清晰、可回滚的 Conventional Commit，并推送 GitHub。
+7. 确认 CI 通过。涉及部署或真实 QQ 行为时，在服务器补充部署与 E2E 验证。
 
 ## Rust 代码规范
 
@@ -85,12 +80,12 @@ SSH 不可达、服务器依赖安装失败或服务器验证没有执行时，�
 - 保持模块职责单一，禁止巨型文件和跨层直接依赖。
 - 业务层只能依赖协议抽象，不得直接依赖具体 QQ 协议实现。
 - 并发路径必须考虑取消、关闭、背压、资源释放和错误传播。
-- 所有代码必须先通过本机检查，并在最终交付前通过服务器上的 `cargo fmt --check`、`cargo clippy -- -D warnings` 和 `cargo test`。
+- 所有代码必须通过 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings` 和 `cargo test --workspace --all-targets`。
 
 ## 完成判定
 
 - Mock、空实现、占位符、仅接口设计或仅能编译的骨架不算完成。
 - 单元测试通过但真实 QQ 登录、消息收发或 OneBot E2E 未验证，不算对应功能完成。
 - 未 push 到 GitHub 的本机修改不算交付。
-- 未在服务器验证的提交只能标记为“已实现，待服务器验证”。
+- 普通 Rust 功能以代码、测试和 CI 结果判定；部署、QQ 协议和 OneBot 集成功能还必须有相应服务器/E2E 结果。
 - 只有满足 `GOAL.md` 的全部交付物和完成标准后，才能宣布 Rust 重写完成。

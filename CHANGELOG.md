@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- docs: align contributor instructions with a standard local Rust workspace and CI workflow, reserving the cloud server for deployment and real QQ E2E validation.
 - docs: allow local dependency installation, builds, tests, benchmarks, and runtime validation while retaining cloud Linux and real QQ E2E verification.
 - ci: add root-level GitHub Actions workflow to run fmt/clippy/test/bench in napcat-rs workspace.
 - docs: update test report with latest storage verification and benchmark snapshot.
