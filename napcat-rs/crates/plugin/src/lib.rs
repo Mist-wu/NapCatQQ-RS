@@ -17,7 +17,6 @@ use tokio::{io::AsyncWriteExt, process::Command, sync::RwLock, time::timeout};
 /// Convenience plugin result type.
 pub type PluginResult<T> = std::result::Result<T, PluginError>;
 
-
 /// Host-supplied context passed to plugin initialization.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PluginContext {

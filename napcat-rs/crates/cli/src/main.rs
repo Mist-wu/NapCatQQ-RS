@@ -98,12 +98,14 @@ async fn run_app(args: Args) -> Result<(), String> {
             if config.protocol_endpoint.trim().is_empty() {
                 return Err(String::from("protocol endpoint is required for qq mode"));
             }
-            let account = config.qq_account.clone().ok_or_else(|| {
-                String::from("qq account is required for qq mode")
-            })?;
-            let password = config.qq_password.clone().ok_or_else(|| {
-                String::from("qq password is required for qq mode")
-            })?;
+            let account = config
+                .qq_account
+                .clone()
+                .ok_or_else(|| String::from("qq account is required for qq mode"))?;
+            let password = config
+                .qq_password
+                .clone()
+                .ok_or_else(|| String::from("qq password is required for qq mode"))?;
 
             let backend_config = QQClientBackendConfig::new(config.protocol_endpoint.clone())
                 .with_credentials(account, password)

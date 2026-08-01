@@ -116,7 +116,10 @@ mod tests {
         // We intentionally avoid constructing one.
         let _unused = EventBus::<EventPayload>::new(1);
 
-        assert_eq!(EventBus::<EventPayload>::new(8).sender().receiver_count(), 0);
+        assert_eq!(
+            EventBus::<EventPayload>::new(8).sender().receiver_count(),
+            0
+        );
     }
 
     #[tokio::test]
@@ -151,10 +154,7 @@ mod tests {
             .expect("event published");
 
         assert_eq!(published, 1);
-        let received = rx
-            .recv()
-            .await
-            .expect("event should be delivered");
+        let received = rx.recv().await.expect("event should be delivered");
         assert_eq!(received.payload.id, 2);
         assert_eq!(received.source, "api");
         assert_eq!(received.kind, "protocol");

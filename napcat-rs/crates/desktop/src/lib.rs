@@ -5,9 +5,9 @@ use napcat_protocol::ProtocolEvent;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
-    sync::{mpsc, RwLock},
+    sync::{RwLock, mpsc},
     task::JoinHandle,
-    time::{interval, Duration},
+    time::{Duration, interval},
 };
 
 /// Desktop module result alias.
@@ -203,7 +203,10 @@ mod tests {
         assert_eq!(snapshot.last_source.as_deref(), Some("protocol"));
 
         runtime.stop().await?;
-        assert!(matches!(runtime.stop().await, Err(DesktopError::AlreadyStopped)));
+        assert!(matches!(
+            runtime.stop().await,
+            Err(DesktopError::AlreadyStopped)
+        ));
         Ok(())
     }
 }

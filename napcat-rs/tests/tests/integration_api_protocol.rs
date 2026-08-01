@@ -7,7 +7,6 @@ use axum::{
 use napcat_api::{ApiState, CompatSendRequest, MessageType};
 use napcat_message::MessageRecipient;
 use napcat_protocol::{ProtocolEvent, ProtocolResult, deserialize_event, forward_to_handler};
-use serde_json;
 use tower::util::ServiceExt;
 
 #[tokio::test]

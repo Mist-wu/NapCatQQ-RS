@@ -23,9 +23,7 @@ use napcat_message::{Message as NapMessage, MessageRecipient};
 use napcat_plugin::{
     PluginBackendKind, PluginDefinition, PluginEvent, PluginManager, PluginMetadata,
 };
-use napcat_protocol::{
-    ProtocolBackend, ProtocolError, ProtocolEvent, ProtocolResult,
-};
+use napcat_protocol::{ProtocolBackend, ProtocolError, ProtocolEvent, ProtocolResult};
 use serde::{Deserialize, Serialize};
 use tokio::{
     sync::{RwLock, broadcast, mpsc},
@@ -351,9 +349,7 @@ impl IntoResponse for ApiError {
             ApiError::InvalidRequest { retcode, message } => {
                 (StatusCode::BAD_REQUEST, retcode, message)
             }
-            ApiError::EventDispatch(message) => {
-                (StatusCode::SERVICE_UNAVAILABLE, -1, message)
-            }
+            ApiError::EventDispatch(message) => (StatusCode::SERVICE_UNAVAILABLE, -1, message),
             ApiError::ProtocolSend(message) => (StatusCode::BAD_GATEWAY, -1, message),
         };
 
@@ -398,9 +394,7 @@ impl ApiState {
                             .unwrap_or_else(|_| serde_json::json!({})),
                         source: Some(String::from("protocol")),
                     };
-                    let _ = plugin_manager_for_events
-                        .dispatch(plugin_event)
-                        .await;
+                    let _ = plugin_manager_for_events.dispatch(plugin_event).await;
                 }
                 let _ = protocol_relay.publish(EventEnvelope::new("protocol", "event", event));
             }
@@ -615,7 +609,11 @@ async fn get_status_compat(
 ) -> ApiResult<Json<ApiEnvelope<LoginStatusData>>> {
     let online = state.is_runtime_running().await;
     Ok(Json(ApiEnvelope {
-        status: if online { String::from("ok") } else { String::from("failed") },
+        status: if online {
+            String::from("ok")
+        } else {
+            String::from("failed")
+        },
         retcode: if online { 0 } else { 1201 },
         data: LoginStatusData {
             online,
@@ -811,9 +809,7 @@ async fn delete_msg(
     Ok(Json(ApiEnvelope {
         status: String::from("ok"),
         retcode: 0,
-        data: DeleteMsgResponse {
-            message_id,
-        },
+        data: DeleteMsgResponse { message_id },
         message: None,
     }))
 }
@@ -914,7 +910,9 @@ async fn plugin_unload(
     }))
 }
 
-async fn plugin_list(State(state): State<ApiState>) -> ApiResult<Json<ApiEnvelope<PluginListResponse>>> {
+async fn plugin_list(
+    State(state): State<ApiState>,
+) -> ApiResult<Json<ApiEnvelope<PluginListResponse>>> {
     let plugins = state.plugin_manager().list().await;
     Ok(Json(ApiEnvelope {
         status: String::from("ok"),
@@ -924,7 +922,9 @@ async fn plugin_list(State(state): State<ApiState>) -> ApiResult<Json<ApiEnvelop
     }))
 }
 
-async fn plugin_kinds(State(state): State<ApiState>) -> ApiResult<Json<ApiEnvelope<PluginKindsResponse>>> {
+async fn plugin_kinds(
+    State(state): State<ApiState>,
+) -> ApiResult<Json<ApiEnvelope<PluginKindsResponse>>> {
     let kinds = state
         .plugin_manager()
         .kinds()
@@ -959,7 +959,9 @@ async fn plugin_metadata(
     }))
 }
 
-async fn plugin_status(State(state): State<ApiState>) -> ApiResult<Json<ApiEnvelope<PluginStatusResponse>>> {
+async fn plugin_status(
+    State(state): State<ApiState>,
+) -> ApiResult<Json<ApiEnvelope<PluginStatusResponse>>> {
     let plugins = state.plugin_manager().list().await;
     let running = state.is_runtime_running().await;
     Ok(Json(ApiEnvelope {
@@ -991,7 +993,9 @@ async fn listen_messages(
         match event_result {
             Ok(Ok(envelope)) => {
                 let event = envelope.payload;
-                if let Some(accepted_types) = &event_types && !accepted_types.contains(onebot_event_post_type(&event)) {
+                if let Some(accepted_types) = &event_types
+                    && !accepted_types.contains(onebot_event_post_type(&event))
+                {
                     continue;
                 }
                 if let Ok(serialized) = onebot_event_payload(&event) {
@@ -1021,11 +1025,7 @@ async fn ws_upgrade(
     ws.on_upgrade(move |socket| ws_handler(socket, state, event_types))
 }
 
-async fn ws_handler(
-    mut socket: WebSocket,
-    state: ApiState,
-    event_types: Option<HashSet<String>>,
-) {
+async fn ws_handler(mut socket: WebSocket, state: ApiState, event_types: Option<HashSet<String>>) {
     let mut rx = state.events.subscribe();
     while let Ok(envelope) = rx.recv().await {
         if let Some(accepted_types) = &event_types
@@ -1130,8 +1130,7 @@ fn parse_event_types(query: &ListenQuery) -> Option<HashSet<String>> {
 }
 
 fn parse_event_type_list(raw: &str) -> HashSet<String> {
-    raw
-        .split(',')
+    raw.split(',')
         .map(|value| value.trim().to_lowercase())
         .filter(|value| !value.is_empty())
         .collect::<HashSet<_>>()
@@ -1187,7 +1186,9 @@ fn validate_message(message: &NapMessage) -> ApiResult<()> {
 
 fn validate_message_payload(message: &NapMessage) -> ApiResult<()> {
     if message.id.trim().is_empty() {
-        Err(ApiError::invalid_request(String::from("message id cannot be empty")))
+        Err(ApiError::invalid_request(String::from(
+            "message id cannot be empty",
+        )))
     } else if message.sender_id.trim().is_empty() {
         Err(ApiError::invalid_request(String::from(
             "sender_id cannot be empty",
@@ -1264,17 +1265,14 @@ pub async fn run_with_state(addr: &str, state: ApiState) -> ProtocolResult<()> {
         }
     };
 
-    if let Some(protocol) = protocol.clone() {
-        if let Err(error) = protocol
+    if let Some(protocol) = protocol.clone()
+        && let Err(error) = protocol
             .listen(state.protocol_event_sender())
             .await
-            .map_err(|error| {
-                ProtocolError::Transport(format!("protocol listen failed: {error}"))
-            })
-        {
-            state.set_runtime_running(false).await;
-            return Err(error);
-        }
+            .map_err(|error| ProtocolError::Transport(format!("protocol listen failed: {error}")))
+    {
+        state.set_runtime_running(false).await;
+        return Err(error);
     }
 
     let app = state.clone().router();
@@ -1385,10 +1383,7 @@ mod tests {
         assert_eq!(envelope["status"], "failed");
         assert_eq!(envelope["retcode"], 1201);
         assert_eq!(envelope["data"]["online"].as_bool(), Some(false));
-        assert_eq!(
-            envelope["message"].as_str(),
-            Some("runtime not logged in")
-        );
+        assert_eq!(envelope["message"].as_str(), Some("runtime not logged in"));
     }
 
     #[tokio::test]
@@ -1689,7 +1684,10 @@ mod tests {
             serde_json::from_slice(&body).expect("send request payload");
         assert_eq!(envelope["status"], "failed");
         assert_eq!(envelope["retcode"], -1);
-        assert_eq!(envelope["message"].as_str(), Some("message id cannot be empty"));
+        assert_eq!(
+            envelope["message"].as_str(),
+            Some("message id cannot be empty")
+        );
     }
 
     #[tokio::test]
@@ -1755,6 +1753,7 @@ mod tests {
         .expect("payload serialize");
 
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -1791,9 +1790,7 @@ mod tests {
         let event_envelope: serde_json::Value =
             serde_json::from_slice(&event_body).expect("get events payload");
         let event = serde_json::from_str::<serde_json::Value>(
-            event_envelope["data"][0]
-                .as_str()
-                .expect("event body"),
+            event_envelope["data"][0].as_str().expect("event body"),
         )
         .expect("event json parse");
         assert_eq!(event["user_id"], "sender");
@@ -1971,8 +1968,9 @@ mod tests {
             serde_json::from_slice(&body).expect("get_events payload");
         let data = envelope["data"].as_array().expect("event list");
         assert_eq!(data.len(), 1);
-        let event = serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
-            .expect("event json parse");
+        let event =
+            serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
+                .expect("event json parse");
         assert_eq!(event["post_type"], "message");
     }
 
@@ -2020,8 +2018,9 @@ mod tests {
             serde_json::from_slice(&body).expect("get_events payload");
         let data = envelope["data"].as_array().expect("event list");
         assert_eq!(data.len(), 1);
-        let event = serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
-            .expect("event json parse");
+        let event =
+            serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
+                .expect("event json parse");
         assert_eq!(event["post_type"], "message");
     }
 
@@ -2054,7 +2053,9 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/get_events?types=message&post_type=meta_event&timeout_ms=50&max_events=8")
+                    .uri(
+                        "/get_events?types=message&post_type=meta_event&timeout_ms=50&max_events=8",
+                    )
                     .body(Body::empty())
                     .expect("valid request"),
             )
@@ -2070,8 +2071,9 @@ mod tests {
         let data = envelope["data"].as_array().expect("event list");
         assert_eq!(data.len(), 1);
 
-        let event = serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
-            .expect("event json parse");
+        let event =
+            serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
+                .expect("event json parse");
         assert_eq!(event["post_type"], "message");
     }
 
@@ -2120,8 +2122,9 @@ mod tests {
         let data = envelope["data"].as_array().expect("event list");
         assert_eq!(data.len(), 1);
 
-        let event = serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
-            .expect("event json parse");
+        let event =
+            serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
+                .expect("event json parse");
         assert_eq!(event["post_type"], "message");
     }
 
@@ -2256,14 +2259,15 @@ mod tests {
         let post_types = data
             .iter()
             .map(|entry| {
-                let event = serde_json::from_str::<serde_json::Value>(entry.as_str().expect("event body"))
-                    .expect("event json parse");
+                let event =
+                    serde_json::from_str::<serde_json::Value>(entry.as_str().expect("event body"))
+                        .expect("event json parse");
                 event["post_type"].as_str().map(ToString::to_string)
             })
             .collect::<Vec<_>>();
 
         assert!(post_types.contains(&Some(String::from("message"))));
-        assert!(post_types.contains(&Some(String::from("meta_event")));
+        assert!(post_types.contains(&Some(String::from("meta_event"))));
     }
 
     #[tokio::test]
@@ -2295,9 +2299,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(
-                        "/get_events?type=message&post_type=meta_event&timeout_ms=50&max_events=8",
-                    )
+                    .uri("/get_events?type=message&post_type=meta_event&timeout_ms=50&max_events=8")
                     .body(Body::empty())
                     .expect("valid request"),
             )
@@ -2313,8 +2315,9 @@ mod tests {
         let data = envelope["data"].as_array().expect("event list");
         assert_eq!(data.len(), 1);
 
-        let event = serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
-            .expect("event json parse");
+        let event =
+            serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
+                .expect("event json parse");
         assert_eq!(event["post_type"], "message");
     }
 
@@ -2347,9 +2350,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(
-                        "/get_events?type=%20%20&post_type=meta_event&timeout_ms=50&max_events=8",
-                    )
+                    .uri("/get_events?type=%20%20&post_type=meta_event&timeout_ms=50&max_events=8")
                     .body(Body::empty())
                     .expect("valid request"),
             )
@@ -2365,8 +2366,9 @@ mod tests {
         let data = envelope["data"].as_array().expect("event list");
         assert_eq!(data.len(), 1);
 
-        let event = serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
-            .expect("event json parse");
+        let event =
+            serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
+                .expect("event json parse");
         assert_eq!(event["post_type"], "meta_event");
     }
 
@@ -2399,9 +2401,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(
-                        "/get_events?type=unknown&post_type=meta_event&timeout_ms=50&max_events=8",
-                    )
+                    .uri("/get_events?type=unknown&post_type=meta_event&timeout_ms=50&max_events=8")
                     .body(Body::empty())
                     .expect("valid request"),
             )
@@ -2497,8 +2497,9 @@ mod tests {
         let data = envelope["data"].as_array().expect("event list");
         assert_eq!(data.len(), 1);
 
-        let event = serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
-            .expect("event json parse");
+        let event =
+            serde_json::from_str::<serde_json::Value>(data[0].as_str().expect("event body"))
+                .expect("event json parse");
         assert_eq!(event["post_type"], "message");
     }
 
@@ -2550,14 +2551,15 @@ mod tests {
         let post_types = data
             .iter()
             .map(|entry| {
-                let event = serde_json::from_str::<serde_json::Value>(entry.as_str().expect("event body"))
-                    .expect("event json parse");
+                let event =
+                    serde_json::from_str::<serde_json::Value>(entry.as_str().expect("event body"))
+                        .expect("event json parse");
                 event["post_type"].as_str().map(ToString::to_string)
             })
             .collect::<Vec<_>>();
 
         assert!(post_types.contains(&Some(String::from("message"))));
-        assert!(post_types.contains(&Some(String::from("meta_event")));
+        assert!(post_types.contains(&Some(String::from("meta_event"))));
     }
 
     #[tokio::test]
@@ -2762,6 +2764,7 @@ mod tests {
         assert_eq!(metadata_response.status(), StatusCode::OK);
 
         let status_response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("GET")
@@ -2801,8 +2804,8 @@ mod tests {
             },
             "hello",
         );
-        let payload =
-            onebot_event_payload(&ProtocolEvent::MessageReceived { message }).expect("event payload");
+        let payload = onebot_event_payload(&ProtocolEvent::MessageReceived { message })
+            .expect("event payload");
         let parsed: serde_json::Value = serde_json::from_str(&payload).expect("json payload");
 
         assert_eq!(parsed["post_type"], "message");

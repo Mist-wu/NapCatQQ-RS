@@ -612,9 +612,8 @@ impl QQClient for TcpQQClient {
             let mut stream = self.stream.lock().await;
             let stream = stream.take();
             if let Some(stream) = stream {
-                let _ = stream.into_std().and_then(|stream| {
+                let _ = stream.into_std().map(|stream| {
                     let _ = stream.shutdown(std::net::Shutdown::Both);
-                    Ok(())
                 });
             }
         }
@@ -930,7 +929,7 @@ mod tests {
             .await
             .expect("receive should finish after disconnect")
             .expect("receive task join ok")?;
-        assert!(matches!(got, None));
+        assert!(got.is_none());
 
         let _ = server.await;
         Ok(())
