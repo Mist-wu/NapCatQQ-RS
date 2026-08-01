@@ -12,9 +12,9 @@ root@152.42.241.53
 
 必须严格遵守以下边界：
 
-- 在本机执行：代码阅读、代码编辑、文档编写、`git add`、`git commit`、`git push`、`gh` 仓库管理。
-- 在服务器执行：`git pull`、依赖安装、`cargo build`、`cargo check`、`cargo test`、`cargo bench`、`cargo fmt --check`、`cargo clippy`、程序运行、部署、真实 QQ 登录和 E2E 验证。
-- 禁止在本机安装项目依赖、执行 Cargo 命令、编译、测试或运行 NapCatQQ-RS。
+- 在本机执行：代码阅读、代码编辑、文档编写、依赖安装、Cargo 构建/检查/测试/基准测试、程序运行、`git add`、`git commit`、`git push` 和 `gh` 仓库管理。
+- 在服务器执行：`git pull`、Linux 环境构建与测试、部署运行、真实 QQ 登录和 E2E 验证。
+- 允许在本机执行 `cargo build`、`cargo check`、`cargo test`、`cargo bench`、`cargo fmt --check`、`cargo clippy` 和运行 NapCatQQ-RS。
 - 禁止直接在服务器编辑项目源代码或创建提交；服务器工作区只用于拉取并验证本机已经推送的提交。
 - 不得把密码、令牌、QQ 凭据、Cookie、设备信息或其他秘密写入仓库、提交记录、日志和文档。
 
@@ -41,7 +41,7 @@ git --version
 gh --version
 ```
 
-缺少工具时只在服务器安装。服务器仓库不存在时，在 `/root/projects` 下从 GitHub 克隆；已存在时使用：
+本机和服务器可分别安装各自环境缺少的工具。服务器仓库不存在时，在 `/root/projects` 下从 GitHub 克隆；已存在时使用：
 
 ```bash
 cd /root/projects/NapCatQQ-RS
@@ -66,13 +66,14 @@ SSH 不可达、服务器依赖安装失败或服务器验证没有执行时，�
 
 1. 在本机查看当前代码状态和相关文件。
 2. 在本机完成单一目的的代码或文档修改。
-3. 在本机更新 `CHANGELOG.md`。
-4. 在本机提交并推送到 GitHub。
-5. SSH 登录服务器并进入 `/root/projects/NapCatQQ-RS`。
-6. 在服务器执行 `git pull --ff-only origin main`。
-7. 在服务器执行该步骤需要的 `cargo fmt --check`、`cargo clippy -- -D warnings`、构建和测试。
-8. 涉及 QQ 协议、登录、消息或 OneBot API 时，在服务器完成真实 QQ/E2E 验证。
-9. 若验证失败，回到本机修改并创建单一目的修复提交，然后重复上述流程。
+3. 在本机执行该步骤需要的格式检查、Clippy、构建、测试、基准测试或运行验证。
+4. 在本机更新 `CHANGELOG.md`。
+5. 在本机提交并推送到 GitHub。
+6. SSH 登录服务器并进入 `/root/projects/NapCatQQ-RS`。
+7. 在服务器执行 `git pull --ff-only origin main`。
+8. 在服务器执行 Linux 环境所需的格式检查、Clippy、构建和测试。
+9. 涉及 QQ 协议、登录、消息或 OneBot API 时，在服务器完成真实 QQ/E2E 验证。
+10. 若任一环境验证失败，回到本机修改并创建单一目的修复提交，然后重复上述流程。
 
 ## Rust 代码规范
 
@@ -84,7 +85,7 @@ SSH 不可达、服务器依赖安装失败或服务器验证没有执行时，�
 - 保持模块职责单一，禁止巨型文件和跨层直接依赖。
 - 业务层只能依赖协议抽象，不得直接依赖具体 QQ 协议实现。
 - 并发路径必须考虑取消、关闭、背压、资源释放和错误传播。
-- 所有代码必须通过服务器上的 `cargo fmt --check`、`cargo clippy -- -D warnings` 和 `cargo test`。
+- 所有代码必须先通过本机检查，并在最终交付前通过服务器上的 `cargo fmt --check`、`cargo clippy -- -D warnings` 和 `cargo test`。
 
 ## 完成判定
 

@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- docs: allow local dependency installation, builds, tests, benchmarks, and runtime validation while retaining cloud Linux and real QQ E2E verification.
 - ci: add root-level GitHub Actions workflow to run fmt/clippy/test/bench in napcat-rs workspace.
 - docs: update test report with latest storage verification and benchmark snapshot.
 - docs: refresh benchmark timing summary in `docs/test-report.md` to latest `cargo bench` output.
